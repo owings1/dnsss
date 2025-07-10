@@ -1,0 +1,9 @@
+__pycache__
+.coverage
+.env
+.venv
+*.pyc
+/.python-version
+/.vscode
+*.yml
+!*.example.yml
