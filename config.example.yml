@@ -1,4 +1,4 @@
-initial: 0.05
+initial: 0.08
 servers:
   - 8.8.8.8
   - 8.8.4.4

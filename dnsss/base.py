@@ -123,7 +123,6 @@ class BaseCommand:
                     logger.exception(f'Query failed')
                 else:
                     info = rep.model_dump(mode='json') | resolver.stateinfo()
-                    del info['means']
                     print(json.dumps(info, indent=2), end=None, flush=True)
                 if self.opts.interval:
                     time.sleep(self.opts.interval)

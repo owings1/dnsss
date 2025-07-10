@@ -2,13 +2,32 @@
 
 DNS Server Selection algorithm demonstrations.
 
+## Requirements
+
+- Python 3.13
+- See requirements.txt
+
 ## Bind algorithm
 
-Usage:
+Basic Usage:
 
 ```sh
-python3 -m dnss.bind example.com
+python3 -m dnsss.bind example.com
 ```
+
+Press enter to repeat query.
+
+Advanced Usage Example.
+
+Read from config file (see config.example.yml), query every 100ms for 500 queries, make it pretty.
+
+```sh
+python3 -m dnsss.bind example.com -f config.yml -n 0.1 -c 500 | jq
+```
+
+## TODO
+
+AR-1 autoregression algorithm.
 
 ## References
 
