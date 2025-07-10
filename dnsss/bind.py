@@ -12,7 +12,7 @@ class Config(DataModel):
     initial: PositiveFloat = 0.05
     params: tuple[PositiveFloat, PositiveFloat] = (0.7, 0.98)
 
-class Resolver(BaseResolver):
+class BindResolver(BaseResolver):
 
     def __init__(self, config: Any) -> None:
         super().__init__(config)
@@ -40,7 +40,7 @@ class Resolver(BaseResolver):
 
 class Command(BaseCommand):
     description: ClassVar = 'Bind algorithm demo'
-    resolver_class: ClassVar = Resolver
+    resolver_class: ClassVar = BindResolver
 
 if __name__ == '__main__':
     Command.main()

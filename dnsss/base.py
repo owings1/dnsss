@@ -24,7 +24,7 @@ class DataModel(BaseModel):
     pass
 
 class BaseConfig(DataModel):
-    servers: list[Server] = Field(default_factory=list, min_length=1)
+    servers: list[Server] = Field(default_factory=list, min_length=2)
 
 class Question(DataModel):
     qname: str
@@ -46,7 +46,6 @@ class BaseResolver:
         self.Snext = list(self.servers)
         self.counts = dict.fromkeys(self.servers, 0)
         self.means = dict.fromkeys(self.servers, 0.0)
-        self.lasts = dict.fromkeys(self.servers, 0.0)
 
     def adjust(self, S: Server, R: RTime) -> None:
         raise NotImplementedError
@@ -62,12 +61,11 @@ class BaseResolver:
             rep = []
         finally:
             R = time.monotonic() - t
+            self.mean = (self.mean * self.count + R) / (self.count + 1)
+            self.count += 1
+            self.means[S] = (self.means[S] * self.counts[S] + R) / (self.counts[S] + 1)
+            self.counts[S] += 1
             self.adjust(S, R)
-        self.mean = (self.mean * self.count + R) / (self.count + 1)
-        self.count += 1
-        self.means[S] = (self.means[S] * self.counts[S] + R) / (self.counts[S] + 1)
-        self.counts[S] += 1
-        self.lasts[S] = R
         return Response(S=S, R=R, q=q, a=[*map(str, rep)])
 
     def stateinfo(self) -> dict[str, Any]:
@@ -80,13 +78,6 @@ class BaseResolver:
 class BaseCommand:
     description: ClassVar[str] = ''
     resolver_class: ClassVar[type[BaseResolver]]
-    default_config: ClassVar = dict(
-        servers=[
-            '8.8.8.8',
-            '8.8.4.4',
-            '1.1.1.1',
-            '129.250.35.250',
-            '208.67.222.222'])
 
     @classmethod
     def create_parser(cls) -> ArgumentParser:
@@ -104,34 +95,36 @@ class BaseCommand:
         arg('--count', '-c', type=int, help='Number of queries after which to quit')
 
     @classmethod
-    def main(cls):
+    def main(cls) -> None:
         parser = cls.create_parser()
         opts = parser.parse_args()
-        command = cls(parser, opts)
-        command.run()
+        cls(parser, opts).run()
 
-    def __init__(self, parser: ArgumentParser, opts):
+    def __init__(self, parser: ArgumentParser, opts) -> None:
         self.parser = parser
         self.opts = opts
+        self.configfile: Path = opts.file or (
+            Path(__file__).resolve().parent.parent/'config.example.yml')
 
     def run(self) -> None:
         q = Question(**vars(self.opts)).model_dump()
-        if self.opts.file:
-            with open(self.opts.file) as file:
-                config = yaml.safe_load(file)
-        else:
-            config = self.default_config
+        with self.configfile.open() as file:
+            config = yaml.safe_load(file)
         resolver = self.resolver_class(config)
+        errcls = (EOFError, KeyboardInterrupt, BrokenPipeError)
         try:
             i = 0
             while True:
                 try:
                     rep = resolver.query(**q)
-                except:
+                except Exception as err:
+                    if isinstance(err, errcls):
+                        raise
                     logger.exception(f'Query failed')
                 else:
                     info = rep.model_dump(mode='json') | resolver.stateinfo()
-                    print(json.dumps(info, indent=2), flush=True)
+                    del info['means']
+                    print(json.dumps(info, indent=2), end=None, flush=True)
                 if self.opts.interval:
                     time.sleep(self.opts.interval)
                 else:
@@ -139,5 +132,5 @@ class BaseCommand:
                 i += 1
                 if self.opts.count and i >= self.opts.count:
                     break
-        except (EOFError, KeyboardInterrupt):
+        except errcls:
             pass
