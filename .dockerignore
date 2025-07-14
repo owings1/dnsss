@@ -1,0 +1,11 @@
+!*.example.yml
+*.yml
+**/__pycache__
+**/.env
+**/*.pyc
+/.dockerignore
+/.git*
+/.python-version
+/.venv
+/.vscode
+/Dockerfile

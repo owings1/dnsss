@@ -43,16 +43,18 @@ class BaseResolver:
     def __init__(self, config: Any) -> None:
         config: BaseConfig = BaseConfig.model_validate(config)
         self.servers = config.servers
-        self.Snext = list(self.servers)
         self.counts = dict.fromkeys(self.servers, 0)
         self.means = dict.fromkeys(self.servers, 0.0)
 
     def adjust(self, S: Server, R: RTime) -> None:
-        raise NotImplementedError
+        pass
+
+    def select(self) -> Server:
+        return random.choice(self.servers)
 
     def query(self, qname: str, rdtype: str = 'A') -> Response:
+        S = self.select()
         q = dict(qname=qname, rdtype=rdtype.upper())
-        S = random.choice(self.Snext)
         resolve = dns.resolver.make_resolver_at(S).resolve
         t = time.monotonic()
         try:
@@ -117,9 +119,9 @@ class BaseCommand:
             while True:
                 try:
                     rep = resolver.query(**q)
-                except Exception as err:
-                    if isinstance(err, errcls):
-                        raise
+                except errcls:
+                    raise
+                except:
                     logger.exception(f'Query failed')
                 else:
                     info = rep.model_dump(mode='json') | resolver.stateinfo()
