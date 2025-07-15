@@ -25,7 +25,7 @@ Read from config file (see config.example.yml), query every 100ms for 500 querie
 python3 -m dnsss.bind example.com -f config.yml -n 0.1 -c 500 | jq
 ```
 
-## AR-1 autoregression algorithm
+## AR1 autoregression algorithm
 
 Basic Usage:
 

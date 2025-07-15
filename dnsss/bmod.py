@@ -4,12 +4,10 @@ from typing import Any, ClassVar
 
 from pydantic import PositiveInt
 
-from .base import BaseCommand, DataModel, RTime, Server
+from .base import BaseCommand, RTime, Server
 from .bind import BindResolver
 
-
-class Config(DataModel):
-    param_k: PositiveInt = 4
+from . import addmean
 
 class BmodResolver(BindResolver):
     """
@@ -18,27 +16,35 @@ class BmodResolver(BindResolver):
     When adjusting the computed R value for the server S that was just queried,
     use the maximum of:
 
-         i. the value as computed according to the original bind algorithm, and
-        ii. the mean obvserved response time of the last k=4 queries to S.
+         i. the value as computed according to the original bind algorithm
+        ii. the mean observed response time of the last k queries to S
 
     The idea is increase the penalty for slower-responding servers, so that they
     are contacted less often, but to keep k sufficiently small to allow for
     recovery of temporary increased latency.
     """
 
+    class Params(BindResolver.Params):
+        k: PositiveInt = 4
+        'Sample width for computing mean response time (last-k)'
+
+    class Config(BindResolver.Config):
+        params: BmodResolver.Params
+
+    params: BmodResolver.Params
+    kmeans: dict[Server, RTime]
+
     def __init__(self, config: Any) -> None:
         super().__init__(config)
-        config: Config = Config.model_validate(config)
-        self.param_k = config.param_k
         self.kmeans = dict.fromkeys(self.servers, 0.0)
 
     def adjust(self, S: Server, R: RTime) -> None:
         super().adjust(S, R)
-        k = self.param_k
+        k = self.params.k
         if self.counts[S] <= k:
             self.kmeans[S] = self.means[S]
         else:
-            self.kmeans[S] = ((self.kmeans[S] * (k - 1)) + R) / k
+            self.kmeans[S] = addmean(R, self.kmeans[S], k)
         self.SR[S] = max(self.SR[S], self.kmeans[S])
 
 class Command(BaseCommand):

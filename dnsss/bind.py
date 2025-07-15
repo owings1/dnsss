@@ -6,25 +6,32 @@ from typing import Any, ClassVar
 from pydantic import PositiveFloat
 
 from . import byvalue
-from .base import BaseCommand, BaseResolver, DataModel, RTime, Server
+from .base import BaseCommand, BaseResolver, RTime, Server
 
-
-class Config(DataModel):
-    initial: PositiveFloat = 0.05
-    param_a: PositiveFloat = 0.7
-    param_g: PositiveFloat = 0.98
 
 class BindResolver(BaseResolver):
 
+    class Params(BaseResolver.Params):
+        o: RTime = 0.05
+        'The initial value for server times'
+        a: PositiveFloat = 0.7
+        'Selected server discount constant'
+        g: PositiveFloat = 0.98
+        'Non-selected server discount constant'
+
+    class Config(BaseResolver.Config):
+        params: BindResolver.Params
+
+    params: BindResolver.Params
+    SR: dict[Server, RTime]
+
     def __init__(self, config: Any) -> None:
         super().__init__(config)
-        config: Config = Config.model_validate(config)
-        self.param_a = config.param_a
-        self.param_g = config.param_g
-        self.SR = dict.fromkeys(self.servers, config.initial)
+        self.SR = dict.fromkeys(self.servers, self.params.o)
 
     def adjust(self, S: Server, R: RTime) -> None:
-        a, g = self.param_a, self.param_g
+        super().adjust(S, R)
+        a, g = self.params.a, self.params.g
         for Si, Ri in self.SR.items():
             if Si == S:
                 r = a * Ri + (1 - a) * R
@@ -42,8 +49,10 @@ class BindResolver(BaseResolver):
                 bests.append(Si)
         return random.choice(bests)
         
-    def stateinfo(self) -> dict[str, Any]:
-        return dict(SR=dict(sorted(self.SR.items(), key=byvalue))) | super().stateinfo()
+    def state(self) -> dict[str, Any]:
+        return dict(
+            SR=dict(sorted(self.SR.items(), key=byvalue)),
+            **super().state())
 
 class Command(BaseCommand):
     description: ClassVar = 'Bind algorithm demo'

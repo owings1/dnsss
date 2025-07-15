@@ -6,29 +6,30 @@ import random
 import time
 from argparse import ArgumentParser
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar, Literal, Sequence
 
 import dns.resolver
 import yaml
-from pydantic import BaseModel, Field, NonNegativeFloat
+from pydantic import (BaseModel, BeforeValidator, Field, NonNegativeFloat,
+                      NonNegativeInt, PositiveFloat, PositiveInt)
 
-from . import byvalue
+from . import addmean, byvalue
 
 logger = logging.getLogger('dnsss')
 
 type Server = str
 type RTime = NonNegativeFloat
 type Answer = list[str]
+type RdType = Annotated[
+    Literal['A', 'AAAA', 'CNAME', 'PTR', 'NS', 'TXT', 'MX', 'SOA', 'SRV'],
+    BeforeValidator(str.upper)]
 
 class DataModel(BaseModel):
     pass
 
-class BaseConfig(DataModel):
-    servers: list[Server] = Field(default_factory=list, min_length=2)
-
 class Question(DataModel):
     qname: str
-    rdtype: str = 'A'
+    rdtype: RdType = 'A'
 
 class Response(DataModel):
     S: Server
@@ -37,40 +38,57 @@ class Response(DataModel):
     a: Answer
 
 class BaseResolver:
-    count: int = 0
-    mean: RTime = 0.0
+
+    class Params(DataModel):
+        pass
+
+    class Config(DataModel):
+        servers: list[Server] = Field(min_length=2)
+        params: BaseResolver.Params
+        tcp: bool = False
+
+    servers: list[Server]
+    params: BaseResolver.Params
+    tcp: bool
+    count: NonNegativeInt
+    counts: dict[Server, NonNegativeInt]
+    mean: RTime
+    means: dict[Server, RTime]
 
     def __init__(self, config: Any) -> None:
-        config: BaseConfig = BaseConfig.model_validate(config)
+        config: BaseResolver.Config = self.Config.model_validate(config)
         self.servers = config.servers
+        self.params = config.params
+        self.tcp = config.tcp
+        self.count = 0
+        self.mean = 0.0
         self.counts = dict.fromkeys(self.servers, 0)
         self.means = dict.fromkeys(self.servers, 0.0)
 
     def adjust(self, S: Server, R: RTime) -> None:
-        pass
+        self.count += 1
+        self.counts[S] += 1
+        self.mean = addmean(R, self.mean, self.count)
+        self.means[S] = addmean(R, self.means[S], self.counts[S])
 
     def select(self) -> Server:
         return random.choice(self.servers)
 
-    def query(self, qname: str, rdtype: str = 'A') -> Response:
+    def query(self, qname: str, rdtype: RdType = 'A') -> Response:
+        q = Question(qname=qname, rdtype=rdtype)
         S = self.select()
-        q = dict(qname=qname, rdtype=rdtype.upper())
         resolve = dns.resolver.make_resolver_at(S).resolve
         t = time.monotonic()
         try:
-            rep = resolve(**q, raise_on_no_answer=False)
+            rep = resolve(**q.model_dump(), raise_on_no_answer=False, tcp=self.tcp)
         except dns.resolver.NXDOMAIN:
             rep = []
         finally:
             R = time.monotonic() - t
-            self.mean = (self.mean * self.count + R) / (self.count + 1)
-            self.count += 1
-            self.means[S] = (self.means[S] * self.counts[S] + R) / (self.counts[S] + 1)
-            self.counts[S] += 1
             self.adjust(S, R)
         return Response(S=S, R=R, q=q, a=[*map(str, rep)])
 
-    def stateinfo(self) -> dict[str, Any]:
+    def state(self) -> dict[str, Any]:
         return dict(
             count=self.count,
             counts=dict(sorted(self.counts.items(), key=byvalue, reverse=True)),
@@ -80,6 +98,17 @@ class BaseResolver:
 class BaseCommand:
     description: ClassVar[str] = ''
     resolver_class: ClassVar[type[BaseResolver]]
+    termerrors: ClassVar[tuple[type[Exception], ...]] = (
+        EOFError,
+        KeyboardInterrupt,
+        BrokenPipeError)
+
+    class Options(BaseModel):
+        qname: str
+        rdtype: RdType
+        file: Path
+        interval: PositiveFloat|None
+        count: PositiveInt|None
 
     @classmethod
     def create_parser(cls) -> ArgumentParser:
@@ -90,48 +119,52 @@ class BaseCommand:
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:
         arg = parser.add_argument
+        confdefault = Path(__file__).resolve().parent.parent/'config.example.yml'
         arg('qname', help='Hostname to query')
         arg('rdtype', nargs='?', default='A', help='Record type, default A')
-        arg('--file', '-f', type=Path, help='Path to yaml config file')
-        arg('--interval', '-n', type=float, help='Poll interval, for non-interactive mode')
-        arg('--count', '-c', type=int, help='Number of queries after which to quit')
+        arg('--file', '-f', default=confdefault, help='Path to yaml config file')
+        arg('--interval', '-n', help='Poll interval, for non-interactive mode')
+        arg('--count', '-c', help='Number of queries after which to quit')
 
     @classmethod
-    def main(cls) -> None:
+    def main(cls, args: Sequence[str]|None = None) -> None:
         parser = cls.create_parser()
-        opts = parser.parse_args()
-        cls(parser, opts).run()
+        cls(parser, parser.parse_args(args)).run()
 
-    def __init__(self, parser: ArgumentParser, opts) -> None:
+    def __init__(self, parser: ArgumentParser, opts: Any) -> None:
         self.parser = parser
-        self.opts = opts
-        self.configfile: Path = opts.file or (
-            Path(__file__).resolve().parent.parent/'config.example.yml')
+        self.opts = self.Options.model_validate(opts, from_attributes=True)
 
-    def run(self) -> None:
-        q = Question(**vars(self.opts)).model_dump()
-        with self.configfile.open() as file:
+    def setup(self) -> None:
+        self.q = Question.model_validate(self.opts, from_attributes=True)
+        with self.opts.file.open() as file:
             config = yaml.safe_load(file)
-        resolver = self.resolver_class(config)
-        errcls = (EOFError, KeyboardInterrupt, BrokenPipeError)
+        self.resolver = self.resolver_class(config)
+        
+    def run(self) -> None:
+        self.setup()
+        self.report(self.resolver.state())
         try:
-            i = 0
             while True:
-                try:
-                    rep = resolver.query(**q)
-                except errcls:
-                    raise
-                except:
-                    logger.exception(f'Query failed')
-                else:
-                    info = rep.model_dump(mode='json') | resolver.stateinfo()
-                    print(json.dumps(info, indent=2), end=None, flush=True)
-                if self.opts.interval:
-                    time.sleep(self.opts.interval)
-                else:
-                    input()
-                i += 1
-                if self.opts.count and i >= self.opts.count:
+                self.loop()
+                if self.opts.count and self.resolver.count >= self.opts.count:
                     break
-        except errcls:
+        except self.termerrors:
             pass
+
+    def loop(self) -> None:
+        try:
+            rep = self.resolver.query(**self.q.model_dump())
+        except self.termerrors:
+            raise
+        except:
+            logger.exception(f'Query failed')
+        else:
+            self.report(rep.model_dump() | self.resolver.state())
+        if self.opts.interval:
+            time.sleep(self.opts.interval)
+        else:
+            input()
+
+    def report(self, info: Any) -> None:
+        print(json.dumps(info, indent=2), end=None, flush=True)
