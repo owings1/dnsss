@@ -66,14 +66,17 @@ class AR1Resolver(BindResolver):
 
     def select(self) -> Server:
         lo = None
+        stale = []
         for Si, ARi in self.AR.items():
             Ri = ARi.P or self.SR[Si]
-            if lo is None or Ri < lo:
+            if self.count - ARi.kth > self.params.m:
+                stale.append(Si)
+            elif lo is None or Ri < lo:
                 lo = Ri
                 bests = [Si]
-            elif Ri == lo or self.count - ARi.kth > self.params.m:
+            elif Ri == lo:
                 bests.append(Si)
-        return random.choice(bests)
+        return random.choice(stale or bests)
 
     def state(self) -> dict[str, Any]:
         return dict(
