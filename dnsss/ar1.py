@@ -62,7 +62,7 @@ class AR1Resolver(BindResolver):
                     araw = (ARi.mean_xy - ARi.mean**2) / (ARi.mean_sq - ARi.mean**2)
                     ARi.a = max(self.params.amin, min(self.params.amax, araw))
             if ARi.cnt >= self.params.p:
-                k = self.count - ARi.kth
+                k = self.count - ARi.kth + 1
                 ARi.P = ARi.a**k * ARi.rqx + (1 - ARi.a**k) * ARi.mean
 
     def select(self) -> Server:
