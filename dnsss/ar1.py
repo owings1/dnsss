@@ -94,6 +94,7 @@ class AR1Resolver(BindResolver):
 class Command(BaseCommand):
     description: ClassVar = 'AR-1 algorithm demo'
     resolver_class: ClassVar = AR1Resolver
+    slug: ClassVar = 'ar1'
 
 if __name__ == '__main__':
     Command.main()

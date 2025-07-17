@@ -59,6 +59,7 @@ class BmodResolver(BindResolver):
 class Command(BaseCommand):
     description: ClassVar = 'Bmod algorithm demo'
     resolver_class: ClassVar = BmodResolver
+    slug: ClassVar = 'bmod'
 
 if __name__ == '__main__':
     Command.main()

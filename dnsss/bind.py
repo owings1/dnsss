@@ -61,6 +61,7 @@ class BindResolver(BaseResolver):
 class Command(BaseCommand):
     description: ClassVar = 'Bind algorithm demo'
     resolver_class: ClassVar = BindResolver
+    slug: ClassVar = 'bind'
 
 if __name__ == '__main__':
     Command.main()
