@@ -95,6 +95,12 @@ class BaseResolver:
             mean=self.mean,
             means=dict(sorted(self.means.items(), key=byvalue)))
 
+    def load(self, state: dict[str, Any]) -> None:
+        self.count = state['count']
+        self.mean = state['mean']
+        self.counts = state['counts']
+        self.means = state['means']
+
 class BaseCommand:
     description: ClassVar[str] = ''
     resolver_class: ClassVar[type[BaseResolver]]
@@ -109,6 +115,7 @@ class BaseCommand:
         file: Path
         interval: PositiveFloat|None
         count: PositiveInt|None
+        load: Path|None
 
     @classmethod
     def create_parser(cls) -> ArgumentParser:
@@ -125,6 +132,7 @@ class BaseCommand:
         arg('--file', '-f', default=confdefault, help='Path to yaml config file')
         arg('--interval', '-n', help='Poll interval, for non-interactive mode')
         arg('--count', '-c', help='Number of queries after which to quit')
+        arg('--load', '-l', help='State file to load')
 
     @classmethod
     def main(cls, args: Sequence[str]|None = None) -> None:
@@ -140,7 +148,10 @@ class BaseCommand:
         with self.opts.file.open() as file:
             config = yaml.safe_load(file)
         self.resolver = self.resolver_class(config)
-        
+        if self.opts.load:
+            with self.opts.load.open() as file:
+                self.resolver.load(yaml.safe_load(file))
+
     def run(self) -> None:
         self.setup()
         self.report(self.resolver.state())

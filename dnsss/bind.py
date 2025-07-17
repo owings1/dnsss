@@ -54,6 +54,10 @@ class BindResolver(BaseResolver):
             SR=dict(sorted(self.SR.items(), key=byvalue)),
             **super().state())
 
+    def load(self, state: dict[str, Any]) -> None:
+        super().load(state)
+        self.SR = state['SR']
+
 class Command(BaseCommand):
     description: ClassVar = 'Bind algorithm demo'
     resolver_class: ClassVar = BindResolver

@@ -87,6 +87,10 @@ class AR1Resolver(BindResolver):
                     key=lambda x: x[1].P)},
             **super().state())
 
+    def load(self, state: dict[str, Any]) -> None:
+        super().load(state)
+        self.AR = {Si: ARData.model_validate(ARi) for Si, ARi in state['AR'].items()}
+
 class Command(BaseCommand):
     description: ClassVar = 'AR-1 algorithm demo'
     resolver_class: ClassVar = AR1Resolver

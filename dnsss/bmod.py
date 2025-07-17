@@ -7,7 +7,7 @@ from pydantic import PositiveInt
 from .base import BaseCommand, RTime, Server
 from .bind import BindResolver
 
-from . import addmean
+from . import addmean, byvalue
 
 class BmodResolver(BindResolver):
     """
@@ -46,6 +46,15 @@ class BmodResolver(BindResolver):
         else:
             self.kmeans[S] = addmean(R, self.kmeans[S], k)
         self.SR[S] = max(self.SR[S], self.kmeans[S])
+
+    def state(self):
+        return dict(
+            kmeans=dict(sorted(self.kmeans.items(), key=byvalue, reverse=True)),
+            **super().state())
+
+    def load(self, state: dict[str, Any]) -> None:
+        super().load(state)
+        self.kmeans = state['kmeans']
 
 class Command(BaseCommand):
     description: ClassVar = 'Bmod algorithm demo'
