@@ -4,10 +4,11 @@ from typing import Any, ClassVar
 
 from pydantic import PositiveInt
 
-from .base import BaseCommand, RTime, Server
-from .bind import BindResolver
-
 from . import addmean, byvalue
+from .base import RTime, Server
+from .bind import BindResolver
+from .cli import BaseCommand
+
 
 class BmodResolver(BindResolver):
     """
@@ -23,6 +24,8 @@ class BmodResolver(BindResolver):
     are contacted less often, but to keep k sufficiently small to allow for
     recovery of temporary increased latency.
     """
+    params: BmodResolver.Params
+    kmeans: dict[Server, RTime]
 
     class Params(BindResolver.Params):
         k: PositiveInt = 4
@@ -30,9 +33,6 @@ class BmodResolver(BindResolver):
 
     class Config(BindResolver.Config):
         params: BmodResolver.Params
-
-    params: BmodResolver.Params
-    kmeans: dict[Server, RTime]
 
     def __init__(self, config: Any) -> None:
         super().__init__(config)

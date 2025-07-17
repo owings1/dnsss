@@ -6,7 +6,8 @@ from typing import Any, ClassVar
 from pydantic import PositiveFloat
 
 from . import byvalue
-from .base import BaseCommand, BaseResolver, RTime, Server
+from .base import BaseResolver, RTime, Server
+from .cli import BaseCommand
 
 
 class BindResolver(BaseResolver):

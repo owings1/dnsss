@@ -3,15 +3,16 @@ from __future__ import annotations
 import random
 from typing import Any, ClassVar
 
-from pydantic import (NonNegativeFloat, NonNegativeInt, PositiveFloat,
-                      PositiveInt)
+from pydantic import (BaseModel, NonNegativeFloat, NonNegativeInt,
+                      PositiveFloat, PositiveInt)
 
-from .base import BaseCommand, DataModel, RTime, Server
-from .bind import BindResolver
 from . import addmean
+from .base import RTime, Server
+from .bind import BindResolver
+from .cli import BaseCommand
 
 
-class ARData(DataModel):
+class ARData(BaseModel):
     P: RTime = 0.0
     mean: RTime = 0.0
     cnt: NonNegativeInt = 0
