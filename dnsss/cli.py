@@ -15,7 +15,7 @@ from typing import Any, ClassVar, Sequence
 import yaml
 from pydantic import BaseModel, NonNegativeInt, ValidationError
 
-from .base import BaseResolver, Question, RdType, RTime, valrtime
+from .base import Anomaly, BaseResolver, Question, RdType, RTime, valrtime
 
 logger = logging.getLogger('dnsss')
 
@@ -169,6 +169,7 @@ class KeyAction:
         'P': 'pause',
         'D': 'delay',
         'I': 'interval',
+        'A': 'anomaly',
         '+': 'faster',
         '-': 'slower',
         '?': 'help'}
@@ -215,6 +216,25 @@ class KeyAction:
                 interval = min(300.0, max(0.001, interval))
             cmd.opts.interval = interval
             cmd.report(interval=interval)
+
+    def cmd_anomaly(self, cmd: BaseCommand) -> None:
+        opt = self.input('Set anomaly <pat>/<delay>/<duration>')
+        if opt:
+            try:
+                pat, delay, duration = opt.split('/')
+                anomaly = Anomaly(
+                    pat=pat,
+                    delay=delay,
+                    duration=duration)
+            except (ValueError, ValidationError) as err:
+                cmd.report(error=str(err))
+                return
+            else:
+                cmd.report(anomaly=anomaly.model_dump(mode='json', exclude=['expiry']))
+        else:
+            anomaly = None
+            cmd.report(anomaly=anomaly)
+        cmd.resolver.anomaly = anomaly
 
     def cmd_faster(self, cmd: BaseCommand) -> None:
         if cmd.opts.interval:

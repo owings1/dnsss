@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import random
+import re
 import time
+from datetime import datetime, timedelta
 from typing import Annotated, Any, Literal
 
 import dns.resolver
 from pydantic import (BaseModel, BeforeValidator, Field, NonNegativeFloat,
-                      NonNegativeInt, TypeAdapter)
+                      NonNegativeInt, TypeAdapter, ValidationError)
 
 from . import addmean, byvalue
 
@@ -19,6 +21,13 @@ type RdType = Annotated[
 
 valrtime = TypeAdapter(RTime).validate_python
 
+def valpat(value: str):
+    try:
+        re.compile(value)
+    except ValueError:
+        raise ValidationError
+    return value
+
 class Question(BaseModel):
     qname: str
     rdtype: RdType = 'A'
@@ -29,6 +38,12 @@ class Response(BaseModel):
     q: Question
     a: Answer
 
+class Anomaly(BaseModel):
+    pat: Annotated[str, BeforeValidator(valpat)]
+    delay: RTime
+    duration: NonNegativeInt
+    expiry: datetime|None = None
+
 class BaseResolver:
     servers: list[Server]
     params: BaseResolver.Params
@@ -37,6 +52,7 @@ class BaseResolver:
     counts: dict[Server, NonNegativeInt]
     mean: RTime
     means: dict[Server, RTime]
+    anomaly: Anomaly|None
 
     class Params(BaseModel):
         pass
@@ -55,6 +71,7 @@ class BaseResolver:
         self.mean = 0.0
         self.counts = dict.fromkeys(self.servers, 0)
         self.means = dict.fromkeys(self.servers, 0.0)
+        self.anomaly = None
 
     def adjust(self, S: Server, R: RTime) -> None:
         self.count += 1
@@ -66,8 +83,16 @@ class BaseResolver:
         return random.choice(self.servers)
 
     def query(self, qname: str, rdtype: RdType = 'A', delay: RTime = 0.0) -> Response:
+        if self.anomaly:
+            self.anomaly.expiry = (
+                self.anomaly.expiry or
+                datetime.now() + timedelta(seconds=self.anomaly.duration))
+            if datetime.now() > self.anomaly.expiry:
+                self.anomaly = None
         q = Question(qname=qname, rdtype=rdtype)
         S = self.select()
+        if self.anomaly and re.match(self.anomaly.pat, S):
+            delay += self.anomaly.delay
         resolve = dns.resolver.make_resolver_at(S).resolve
         t = time.monotonic() - valrtime(delay)
         try:
@@ -89,3 +114,4 @@ class BaseResolver:
     def load(self, state: dict[str, Any]) -> None:
         for key in ('count', 'counts', 'mean', 'means'):
             setattr(self, key, state[key])
+        self.servers = list(self.counts)

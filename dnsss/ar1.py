@@ -33,6 +33,8 @@ class AR1Resolver(BindResolver):
         'Minimium sample size before using AR prediction for a server'
         m: PositiveInt = 100
         'Maximum number of queries before a slow server is tried again'
+        b: PositiveInt = 30
+        'Maximum number of queries before a recovering server is tried again'
         amin: PositiveFloat = 0.1
         'Minumum value for AR volatility parameter (alpha)'
         amax: PositiveFloat = 0.9
@@ -70,7 +72,9 @@ class AR1Resolver(BindResolver):
         stale = []
         for Si, ARi in self.AR.items():
             Ri = ARi.P or self.SR[Si]
-            if self.count - ARi.kth > self.params.m:
+            if self.count - ARi.kth > self.params.b and ARi.rqx < self.mean:
+                stale.append(Si)
+            elif self.count - ARi.kth > self.params.m:
                 stale.append(Si)
             elif lo is None or Ri < lo:
                 lo = Ri
