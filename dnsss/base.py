@@ -104,7 +104,7 @@ class BaseResolver:
             self.adjust(S, R)
         return Response(S=S, R=R, q=q, a=[*map(str, rep)])
 
-    def state(self) -> dict[str, Any]:
+    def state(self, *, terse: bool = False) -> dict[str, Any]:
         return dict(
             count=self.count,
             counts=dict(sorted(self.counts.items(), key=byvalue, reverse=True)),

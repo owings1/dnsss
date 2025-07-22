@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from typing import Any, ClassVar
 
@@ -21,6 +22,9 @@ class ARData(BaseModel):
     rqy: RTime = 0.0
     mean_sq: NonNegativeFloat = 0.0
     mean_xy: NonNegativeFloat = 0.0
+    s: float = 0.0
+    std: float = 0.0
+    dcnt: NonNegativeInt = 0
     a: NonNegativeFloat = 0.0
 
 class AR1Resolver(BindResolver):
@@ -33,8 +37,10 @@ class AR1Resolver(BindResolver):
         'Minimium sample size before using AR prediction for a server'
         m: PositiveInt = 100
         'Maximum number of queries before a slow server is tried again'
-        b: PositiveInt = 30
-        'Maximum number of queries before a recovering server is tried again'
+        rbot: PositiveInt = 100
+        'Minimum number of queries to a server before deviation reset counter is checked'
+        rcnt: PositiveInt = 4
+        'Number of consecutive queries to a server with high deviation from mean to trigger reset'
         amin: PositiveFloat = 0.1
         'Minumum value for AR volatility parameter (alpha)'
         amax: PositiveFloat = 0.9
@@ -54,15 +60,25 @@ class AR1Resolver(BindResolver):
         super().adjust(S, R)
         for Si, ARi in self.AR.items():
             if Si == S:
+                om = ARi.mean
                 ARi.kth = self.count
-                ARi.cnt = self.counts[Si]
-                ARi.mean = self.means[Si]
+                ARi.cnt += 1
+                ARi.mean = addmean(R, ARi.mean, ARi.cnt)
                 ARi.mean_sq = addmean(R**2, ARi.mean_sq, ARi.cnt)
                 ARi.rqy, ARi.rqx = ARi.rqx, R
                 if ARi.cnt > 1:
+                    ARi.s += (R - om) * (R - ARi.mean)
+                    ARi.std = math.sqrt(ARi.s / (self.count - 1))
                     ARi.mean_xy = addmean(ARi.rqx * ARi.rqy, ARi.mean_xy, ARi.cnt - 1)
                     araw = (ARi.mean_xy - ARi.mean**2) / (ARi.mean_sq - ARi.mean**2)
                     ARi.a = max(self.params.amin, min(self.params.amax, araw))
+                    if ARi.cnt >= self.params.rbot:
+                        if abs(R - ARi.mean) > ARi.std * 2:
+                            ARi.dcnt += 1
+                            if ARi.dcnt >= self.params.rcnt:
+                                self.AR[Si] = ARi = ARData()
+                        else:
+                            ARi.dcnt = 0
             if ARi.cnt >= self.params.p:
                 k = self.count - ARi.kth + 1
                 ARi.P = ARi.a**k * ARi.rqx + (1 - ARi.a**k) * ARi.mean
@@ -72,9 +88,7 @@ class AR1Resolver(BindResolver):
         stale = []
         for Si, ARi in self.AR.items():
             Ri = ARi.P or self.SR[Si]
-            if self.count - ARi.kth > self.params.b and ARi.rqx < self.mean:
-                stale.append(Si)
-            elif self.count - ARi.kth > self.params.m:
+            if self.count - ARi.kth > self.params.m:
                 stale.append(Si)
             elif lo is None or Ri < lo:
                 lo = Ri
@@ -83,14 +97,20 @@ class AR1Resolver(BindResolver):
                 bests.append(Si)
         return random.choice(stale or bests)
 
-    def state(self) -> dict[str, Any]:
+    def state(self, *, terse: bool = False) -> dict[str, Any]:
+        parent = super().state()
+        if terse:
+            exclude = ['kth', 'rqy', 'mean_sq', 'mean_xy', 's']
+            parent.pop('SR', None)
+        else:
+            exclude = []
         return dict(
             AR={
-                Si: ARi.model_dump()
+                Si: ARi.model_dump(exclude=exclude)
                 for Si, ARi in sorted(
                     self.AR.items(),
                     key=lambda x: x[1].P)},
-            **super().state())
+            **parent)
 
     def load(self, state: dict[str, Any]) -> None:
         super().load(state)

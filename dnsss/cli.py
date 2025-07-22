@@ -127,7 +127,7 @@ class BaseCommand:
         except:
             logger.exception(f'Query failed')
         else:
-            self.report(rep.model_dump() | self.resolver.state())
+            self.report(rep.model_dump() | self.resolver.state(terse=True))
         self.count += 1
         if self.count >= self.opts.count > 0:
             raise UserQuit

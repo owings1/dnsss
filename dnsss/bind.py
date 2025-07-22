@@ -50,7 +50,7 @@ class BindResolver(BaseResolver):
                 bests.append(Si)
         return random.choice(bests)
         
-    def state(self) -> dict[str, Any]:
+    def state(self, *, terse: bool = False) -> dict[str, Any]:
         return dict(
             SR=dict(sorted(self.SR.items(), key=byvalue)),
             **super().state())

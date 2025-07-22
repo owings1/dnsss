@@ -47,7 +47,7 @@ class BmodResolver(BindResolver):
             self.kmeans[S] = addmean(R, self.kmeans[S], k)
         self.SR[S] = max(self.SR[S], self.kmeans[S])
 
-    def state(self):
+    def state(self, *, terse: bool = False):
         return dict(
             kmeans=dict(sorted(self.kmeans.items(), key=byvalue, reverse=True)),
             **super().state())
