@@ -39,7 +39,7 @@ class AR1Resolver(BindResolver):
         'Maximum number of queries before a slow server is tried again'
         rbot: PositiveInt = 100
         'Minimum number of queries to a server before deviation reset counter is checked'
-        rcnt: PositiveInt = 4
+        rcnt: PositiveInt = 10
         'Number of consecutive queries to a server with high deviation from mean to trigger reset'
         amin: PositiveFloat = 0.1
         'Minumum value for AR volatility parameter (alpha)'
@@ -72,13 +72,13 @@ class AR1Resolver(BindResolver):
                     ARi.mean_xy = addmean(ARi.rqx * ARi.rqy, ARi.mean_xy, ARi.cnt - 1)
                     araw = (ARi.mean_xy - ARi.mean**2) / (ARi.mean_sq - ARi.mean**2)
                     ARi.a = max(self.params.amin, min(self.params.amax, araw))
-                    if ARi.cnt >= self.params.rbot:
-                        if abs(R - ARi.mean) > ARi.std * 2:
-                            ARi.dcnt += 1
-                            if ARi.dcnt >= self.params.rcnt:
-                                self.AR[Si] = ARi = ARData()
-                        else:
-                            ARi.dcnt = 0
+                    # ARi.a = 1 - max(self.params.amin, min(self.params.amax, araw))
+                    if ARi.cnt >= self.params.rbot and abs(R - ARi.mean) > ARi.std * 2:
+                        ARi.dcnt += 1
+                        if ARi.dcnt >= self.params.rcnt:
+                            self.AR[Si] = ARi = ARData()
+                    else:
+                        ARi.dcnt = 0
             if ARi.cnt >= self.params.p:
                 k = self.count - ARi.kth + 1
                 ARi.P = ARi.a**k * ARi.rqx + (1 - ARi.a**k) * ARi.mean

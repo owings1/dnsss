@@ -42,7 +42,7 @@ class BaseCommand:
         interval: RTime = 0.0
         count: NonNegativeInt = 0
         save: Path
-        load: Path|None = False
+        load: Path|None = None
         yaml: bool = False
 
     @classmethod
@@ -61,7 +61,7 @@ class BaseCommand:
         arg('--interval', '-n', default=defaults.interval, help='Poll interval')
         arg('--count', '-c', default=defaults.count, help='Number of queries after which to quit')
         arg('--save', '-s', default=defaults.save, help='File to write state on save')
-        arg('--load', '-l', help='State file to load')
+        arg('--load', '-l', nargs='?', default=..., help='Load state from file')
         arg('--yaml', action='store_true', help='Print YAML')
 
     @classmethod
@@ -70,6 +70,10 @@ class BaseCommand:
         cls(parser, parser.parse_args(args)).run()
 
     def __init__(self, parser: ArgumentParser, opts: Any) -> None:
+        if opts.load is ...:
+            opts.load = None
+        elif opts.load is None:
+            opts.load = opts.save
         self.parser = parser
         self.opts = self.Options.model_validate(opts, from_attributes=True)
         self.q = Question.model_validate(self.opts, from_attributes=True)
