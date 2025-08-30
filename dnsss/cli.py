@@ -12,19 +12,51 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 from select import select
-from typing import Annotated, Any, ClassVar, Sequence
+from typing import Annotated, ClassVar, Sequence
 
 import yaml
 
-from .models import *
 from .algs import registry
+from .models import *
+from .utils import linefilter
 
-SELECT_TIMEOUT = 0.01
+BASEDIR = Path(__file__).resolve().parent.parent
 DEFAULT_ALG = 'bind'
+DEFAULT_CONFIG = BASEDIR/'config.example.yml'
 DEFAULT_QNAME = 'google.com'
 INTERVAL_MAX = 300.0
 INTERVAL_MIN = 0.001
+SELECT_TIMEOUT = 0.01
 logger = logging.getLogger('dnsss')
+
+class CommandOptions(BaseModel):
+    model_config: ClassVar = dict(from_attributes=True)
+
+class BaseCommand[O: CommandOptions]:
+    prog: ClassVar[str|None] = None
+    description: ClassVar[str|None] = None
+    options_model: ClassVar[type[O]] = CommandOptions
+
+    @classmethod
+    def add_arguments(cls, parser: ArgumentParser) -> None:
+        pass
+
+    @classmethod
+    def create_parser(cls) -> ArgumentParser:
+        parser = ArgumentParser(description=cls.description, prog=cls.prog)
+        cls.add_arguments(parser)
+        return parser
+
+    @classmethod
+    def main(cls, args: Sequence[str]|None = None) -> None:
+        parser = cls.create_parser()
+        cls(parser, parser.parse_args(args)).run()
+
+    def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
+        self.parser = parser
+        self.opts = self.options_model.model_validate(opts)
+
+    def run(self) -> None: ...
 
 def valalg(alg: str) -> str:
     alg = alg.lower()
@@ -38,54 +70,31 @@ class UserQuit(Exception):
 class UserContinue(Exception):
     pass
 
-class MainCommand:
-    prog: ClassVar[str] = 'dnsss'
-    description: ClassVar[str] = ''
+class MainOptions(CommandOptions):
+    alg: Annotated[str, BeforeValidator(valalg)] = DEFAULT_ALG
+    config: Path = DEFAULT_CONFIG
+    interval: RTime = 0.0
+    count: NonNegativeInt = 0
+    output: Path|None = None
+    load: Path|None = None
+    yaml: bool = False
+    save: bool = False
+
+class MainCommand(BaseCommand[MainOptions]):
+    prog: ClassVar = 'dnsss'
+    options_model: ClassVar = MainOptions
     termerrors: ClassVar[tuple[type[Exception], ...]] = (
         EOFError,
         KeyboardInterrupt,
         BrokenPipeError,
         UserQuit)
 
-    class Options(BaseModel):
-        alg: Annotated[str, BeforeValidator(valalg)] = DEFAULT_ALG
-        config: Path = Path(__file__).resolve().parent.parent/'config.example.yml'
-        interval: RTime = 0.0
-        count: NonNegativeInt = 0
-        output: Path = ...
-        load: Path|None = ...
-        yaml: bool = False
-        save: bool = False
-
-        @model_validator(mode='wrap')
-        @classmethod
-        def _fillpaths(cls, obj: Any, handler):
-            if isinstance(obj, Namespace):
-                data = vars(obj)
-            elif isinstance(obj, BaseModel):
-                data = obj.model_dump()
-            else:
-                data = dict(obj)
-            alg = valalg(data.get('alg', DEFAULT_ALG))
-            if data.get('output', ...) is ...:
-                data['output'] = f'state.{alg}.yml'
-            if data.get('load', ...) is ...:
-                data['load'] = None
-            elif data.get('load', ...) is None:
-                data['load'] = data.get('output')
-            return handler(data)
-
-    @classmethod
-    def create_parser(cls) -> ArgumentParser:
-        parser = ArgumentParser(description=cls.description, prog=cls.prog)
-        cls.add_arguments(parser)
-        return parser
-
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:
+        super().add_arguments(parser)
         arg = parser.add_argument
-        defaults = cls.Options()
-        arg('--alg', '-a', default=defaults.alg, type=str.lower, choices=list(registry), help='Resolver algorithm')
+        defaults = cls.options_model()
+        arg('--alg', '-a', default=defaults.alg, type=valalg, choices=list(registry), help='Resolver algorithm')
         arg('--config', '-f', default=defaults.config, help='Path to YAML config file')
         arg('--interval', '-n', default=defaults.interval, help='Poll interval')
         arg('--count', '-c', default=defaults.count, help='Number of queries after which to quit')
@@ -94,20 +103,32 @@ class MainCommand:
         arg('--load', '-l', nargs='?', default=..., help='Load state from file')
         arg('--yaml', action='store_true', help='Print YAML')
 
-    @classmethod
-    def main(cls, args: Sequence[str]|None = None) -> None:
-        parser = cls.create_parser()
-        cls(parser, parser.parse_args(args)).run()
-
-    def __init__(self, parser: ArgumentParser, opts: Any) -> None:
-        self.parser = parser
-        self.opts = self.Options.model_validate(opts)
+    def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
+        alg = valalg(opts.alg)
+        if opts.output is ...:
+            opts.output = f'state.{alg}.yml'
+        if opts.load is ...:
+            opts.load = None
+        elif opts.load is None:
+            opts.load = opts.output
+        super().__init__(parser, opts)
         self.keyaction = KeyAction(self)
         self.stdin = sys.stdin
         self.stdout = sys.stdout
         self.paused = False
-        self.delay = 0.0
         self.count = 0
+
+    def run(self) -> None:
+        self.setup()
+        with self.ttycontext():
+            self.report(self.resolver.state())
+            if self.stdin.isatty():
+                tty.setcbreak(self.stdin.fileno())
+            try:
+                while True:
+                    self.loop()
+            except self.termerrors:
+                pass
 
     def setup(self) -> None:
         self.tcorgattr = self.stdin.isatty() and termios.tcgetattr(self.stdin.fileno())
@@ -131,30 +152,7 @@ class MainCommand:
             with self.opts.load.open() as file:
                 self.resolver.load(yaml.safe_load(file))
 
-    @contextmanager
-    def ttycontext(self, when: int = termios.TCSADRAIN):
-        fdin = self.stdin.fileno()
-        tcattr = self.stdin.isatty() and termios.tcgetattr(fdin)
-        try:
-            yield
-        finally:
-            if tcattr:
-                termios.tcsetattr(fdin, when, tcattr)
-
-    def run(self) -> None:
-        self.setup()
-        with self.ttycontext():
-            self.report(self.resolver.state())
-            if self.stdin.isatty():
-                tty.setcbreak(self.stdin.fileno())
-            try:
-                while True:
-                    self.loop()
-            except self.termerrors:
-                pass
-
     def loop(self) -> None:
-        self.delay = 0.0
         if self.stdin.isatty():
             try:
                 self.readtty()
@@ -164,7 +162,7 @@ class MainCommand:
             time.sleep(self.opts.interval or 1)
         q = random.choice(self.questions)
         try:
-            rep = self.resolver.query(**q.model_dump(), delay=self.delay)
+            rep = self.resolver.query(q)
         except self.termerrors:
             raise
         except:
@@ -207,13 +205,22 @@ class MainCommand:
             stdout.write('\n')
         stdout.flush()
 
+    @contextmanager
+    def ttycontext(self, when: int = termios.TCSADRAIN):
+        fdin = self.stdin.fileno()
+        tcattr = self.stdin.isatty() and termios.tcgetattr(fdin)
+        try:
+            yield
+        finally:
+            if tcattr:
+                termios.tcsetattr(fdin, when, tcattr)
+
 class KeyAction:
     keymap: ClassVar[dict[str, str]] = {
         '\n': 'continue',
         'Q': 'quit',
         'S': 'save',
         'P': 'pause',
-        'D': 'delay',
         'I': 'interval',
         'A': 'anomaly',
         '+': 'faster',
@@ -225,33 +232,27 @@ class KeyAction:
 
     def __call__(self, key: str) -> None:
         if key in self.keymap:
-            getattr(self, f'cmd_{self.keymap[key]}')(self.cmd)
+            getattr(self, f'cmd_{self.keymap[key]}')()
 
-    def cmd_continue(self, cmd: MainCommand) -> None:
+    def cmd_continue(self) -> None:
         raise UserContinue
 
-    def cmd_quit(self, cmd: MainCommand) -> None:
+    def cmd_quit(self) -> None:
         raise UserQuit
 
-    def cmd_save(self, cmd: MainCommand) -> None:
+    def cmd_save(self) -> None:
+        cmd = self.cmd
         cmd.save()
         cmd.report(save=cmd.opts.output.name)
 
-    def cmd_pause(self, cmd: MainCommand) -> None:
+    def cmd_pause(self) -> None:
+        cmd = self.cmd
         if cmd.opts.interval:
             cmd.paused = not cmd.paused
             cmd.report(paused=cmd.paused)
 
-    def cmd_delay(self, cmd: MainCommand) -> None:
-        opt = self.input('Delay for next query')
-        try:
-            cmd.delay = valrtime(opt or 0)
-        except ValidationError as err:
-            cmd.report(error=str(err))
-            cmd.delay = 0.0
-        cmd.report(delay=cmd.delay)
-
-    def cmd_interval(self, cmd: MainCommand) -> None:
+    def cmd_interval(self) -> None:
+        cmd = self.cmd
         opt = self.input('Set interval')
         try:
             interval = valrtime(opt or cmd.opts.interval)
@@ -259,11 +260,12 @@ class KeyAction:
             cmd.report(error=str(err))
         else:
             if interval:
-                interval = min(300.0, max(0.001, interval))
+                interval = min(INTERVAL_MAX, max(INTERVAL_MIN, interval))
             cmd.opts.interval = interval
             cmd.report(interval=interval)
 
-    def cmd_anomaly(self, cmd: MainCommand) -> None:
+    def cmd_anomaly(self) -> None:
+        cmd = self.cmd
         opt = self.input('Set anomaly <pat>/<delay>/<duration>')
         if opt:
             try:
@@ -283,18 +285,21 @@ class KeyAction:
             cmd.report(anomaly=anomaly)
         cmd.resolver.anomaly = anomaly
 
-    def cmd_faster(self, cmd: MainCommand) -> None:
+    def cmd_faster(self) -> None:
+        cmd = self.cmd
         if cmd.opts.interval:
             cmd.opts.interval = max(INTERVAL_MIN, cmd.opts.interval / 1.5)
         else:
             cmd.opts.interval = 1.0
         cmd.report(interval=cmd.opts.interval)
 
-    def cmd_slower(self, cmd: MainCommand) -> None:
+    def cmd_slower(self) -> None:
+        cmd = self.cmd
         cmd.opts.interval = min(INTERVAL_MAX, cmd.opts.interval * 1.5)
         cmd.report(interval=cmd.opts.interval)
 
-    def cmd_help(self, cmd: MainCommand) -> None:
+    def cmd_help(self) -> None:
+        cmd = self.cmd
         cmd.report(help={
             key.replace('\n', '[enter]'): value
             for key, value in self.keymap.items()})
@@ -308,6 +313,3 @@ class KeyAction:
             if stdin.isatty():
                 termios.tcsetattr(stdin.fileno(), termios.TCSANOW, cmd.tcorgattr)
             return stdin.readline().strip()
-
-def linefilter(line: str) -> bool:
-    return bool(line.strip()) and not line.startswith('#')

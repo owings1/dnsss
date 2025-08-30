@@ -1,11 +1,11 @@
 """
-Bind algorithm with the following optimization:
+Modified BIND algorithm with the following optimization:
 
 When adjusting the computed R value for the server S that was just queried,
 use the maximum of:
 
-     i. the value as computed according to the original bind algorithm
-    ii. the mean observed response time of the last k queries to S
+     i. The value as computed according to the original BIND algorithm
+    ii. The mean observed response time of the last k queries to S
 
 The idea is to increase the penalty for slower-responding servers, so that
 they are contacted less frequently, but to keep k sufficiently small to allow
@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..models import *
-from ..utils import addmean, byvalue
+from ..utils import *
 from . import bind
 
 
@@ -27,13 +27,9 @@ class Params(bind.Params):
 class Resolver(bind.Resolver):
 
     class Config(bind.Resolver.Config):
-        params: Params
+        params: Params = Field(default_factory=Params)
 
     kmeans: dict[Server, RTime]
-    """
-    ...
-    """
-
     config: Resolver.Config
 
     def __init__(self, config: Any) -> None:
@@ -51,7 +47,7 @@ class Resolver(bind.Resolver):
 
     def state(self, *, terse: bool = False):
         return dict(
-            kmeans=dict(sorted(self.kmeans.items(), key=byvalue, reverse=True)),
+            kmeans=dvsorted(self.kmeans, reverse=True),
             **super().state())
 
     def load(self, state: dict[str, Any]) -> None:

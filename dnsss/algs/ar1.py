@@ -1,5 +1,5 @@
 """
-AR-1 Autoregression time series algorithm.
+AR-1 Autoregression time series algorithm
 
 Reference:
 
@@ -31,9 +31,9 @@ class Params(bind.Params):
     'Minimum age in seconds of server data before deviation reset counter is checked'
     rcnt: PositiveInt = 10
     'Number of consecutive queries to a server with high deviation from mean to trigger reset'
-    amin: PositiveFloat = 0.1
+    alpha_min: PositiveFloat = 0.1
     'Minumum value for AR volatility parameter (alpha)'
-    amax: PositiveFloat = 0.9
+    alpha_max: PositiveFloat = 0.9
     'Maximum value for AR volatility parameter (alpha)'
 
 class ARData(BaseModel):
@@ -41,12 +41,12 @@ class ARData(BaseModel):
     P: RTime = 0.0
     """
     The predicted response time of the next query to this server. This will
-    only start to be calculated once the sample size (cnt) is large enough, as
+    only start to be calculated once the sample size is large enough, as
     configured by `Params.p`.
     """
     mean: RTime = 0.0
     'The running mean response time for this server'
-    cnt: NonNegativeInt = 0
+    count: NonNegativeInt = 0
     'The total number of queries sent to this server'
     kth: NonNegativeInt = 0
     rqx: RTime = 0.0
@@ -57,16 +57,19 @@ class ARData(BaseModel):
     std: float = 0.0
     dcnt: NonNegativeInt = 0
     """
-    Count the consecutive queries with high deviation. When this reaches
-    `Params.rcnt`, the ARData for this server data is reinitialized.
+    Deviation reset counter. When this reaches `Params.rcnt`, the data is reset.
     """
     birth: datetime|None = None
     """
     Time of first query. This is checked against `Params.rage` to prevent
     deviation resets happening too quickly.
     """
-    a: NonNegativeFloat = 0.0
-    "AR server volatility parameter (alpha)"
+    alpha: NonNegativeFloat = 0.0
+    """
+    AR server volatility parameter. From the text (p. 4):
+    
+    > The closer alpha is to 1, the less volatile are the server response times.
+    """
 
     def age(self) -> timedelta:
         if self.birth:
@@ -76,10 +79,10 @@ class ARData(BaseModel):
 class Resolver(bind.Resolver):
 
     class Config(bind.Resolver.Config):
-        params: Params
+        params: Params = Field(default_factory=Params)
+    config: Resolver.Config
 
     AR: dict[Server, ARData]
-    config: Resolver.Config
 
     def __init__(self, config: Any) -> None:
         super().__init__(config)
@@ -94,17 +97,27 @@ class Resolver(bind.Resolver):
                 if not ARi.birth:
                     ARi.birth = datetime.now()
                 ARi.kth = self.count
-                ARi.cnt += 1
-                ARi.mean = addmean(R, ARi.mean, ARi.cnt)
-                ARi.mean_sq = addmean(R**2, ARi.mean_sq, ARi.cnt)
+                ARi.count += 1
+                ARi.mean = addmean(R, ARi.mean, ARi.count)
+                ARi.mean_sq = addmean(R**2, ARi.mean_sq, ARi.count)
                 ARi.rqy, ARi.rqx = ARi.rqx, R
-                if ARi.cnt > 1:
+                if ARi.count > 1:
+                    # Compute running standard devation.
                     ARi.s += (R - om) * (R - ARi.mean)
                     ARi.std = math.sqrt(ARi.s / (self.count - 1))
-                    ARi.mean_xy = addmean(ARi.rqx * ARi.rqy, ARi.mean_xy, ARi.cnt - 1)
-                    araw = (ARi.mean_xy - ARi.mean**2) / (ARi.mean_sq - ARi.mean**2)
-                    ARi.a = max(params.amin, min(params.amax, araw))
-                    # ARi.a = 1 - max(params.amin, min(params.amax, araw))
+                    # Calculate alpha. Formula (5) from the text (p. 4) reads:
+                    """
+                                  E[X(q) * X(q - 1)] - E[X**2]
+                        alpha  =  ----------------------------          (5)
+                                       E[X**2] - E[X**2]
+                    """
+                    # This is clearly an error, as the denominator equals zero.
+                    # What follows is a best-effort interpretation, and a work
+                    # in progress.
+                    ARi.mean_xy = addmean(ARi.rqx * ARi.rqy, ARi.mean_xy, ARi.count - 1)
+                    alpha_raw = (ARi.mean_xy - ARi.mean**2) / (ARi.mean_sq - ARi.mean**2)
+                    ARi.alpha = max(params.alpha_min, min(params.alpha_max, alpha_raw))
+                    # ARi.alpha = 1 - ARi.alpha
                     """
                     > [I]f there is a significantly large deviation in the observed
                     > response times from the mean response times, then we restart
@@ -116,7 +129,7 @@ class Resolver(bind.Resolver):
                     # enough to consider our measured standard deviation stable,
                     # defined by `Params.rbot`. Otherwise we will keep clearing
                     # the data prematurely.
-                    if ARi.cnt >= params.rbot and abs(R - ARi.mean) > ARi.std * 2:
+                    if ARi.count >= params.rbot and abs(R - ARi.mean) > ARi.std * 2:
                         # We don't want to let just one or two deviant response
                         # times make us start all over again. We mainly want to
                         # avoid getting mired by old datasets and overgrown sample
@@ -141,11 +154,11 @@ class Resolver(bind.Resolver):
                             self.AR[Si] = ARi = ARData()
                     else:
                         ARi.dcnt = 0
-            if ARi.cnt >= params.p:
+            if ARi.count >= params.p:
                 # We have good enough intial data for this server to graduate
-                # from the bind algorithm and start making predictions (P).
+                # from the BIND algorithm and start making predictions (P).
                 k = self.count - ARi.kth + 1
-                ARi.P = ARi.a**k * ARi.rqx + (1 - ARi.a**k) * ARi.mean
+                ARi.P = ARi.alpha**k * ARi.rqx + (1 - ARi.alpha**k) * ARi.mean
 
     def select(self) -> Server:
         lo = None
@@ -153,7 +166,7 @@ class Resolver(bind.Resolver):
         for Si, ARi in self.AR.items():
             # If our sample size for this server is adequate, we will have
             # made a prediction (P) from the AR data. Otherwise, we use the
-            # R value from the bind algorithm for the initial queries.
+            # R value from the BIND algorithm for the initial queries.
             Ri = ARi.P or self.SR[Si]
             # Ensure that even bad servers are contacted periodically.
             if self.count - ARi.kth > self.config.params.m:

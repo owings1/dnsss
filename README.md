@@ -47,7 +47,7 @@ using `+`/`-`. To run a specific number of queries and quit, use `-c`.
 
 ## Config File
 
-The config file supports the keys `servers`, `params`, and `questions`.
+The main config file keys are `servers`, `params`, and `questions`.
 
 ### Servers
 
@@ -69,7 +69,14 @@ supported data. Extra/unknown keys are ignored. Example:
 
 ```yaml
 params:
-
+  # See bind resolver
+  g: 0.98
+  o: 0.05
+  # See bmod resolver
+  k: 4
+  # See ar1 resolver
+  alpha_min: 0.1
+  alpha_max: 0.9
 ```
 
 ### Questions
@@ -88,6 +95,14 @@ questions:
 
 If no values are provided, it defaults to `google.com`. For file syntax, see `questions.example.dns`.
 
+### Other Config
+
+```yaml
+# Default timeout seconds
+timeout: 5.0
+# Whether to use TCP for DNS queries
+tcp: false
+```
 
 ## References
 
