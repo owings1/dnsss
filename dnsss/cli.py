@@ -253,7 +253,7 @@ class KeyAction:
 
     def cmd_help(self, cmd: BaseCommand) -> None:
         cmd.report(help={
-            key.replace('\n', '↵'): value
+            key.replace('\n', '[enter]'): value
             for key, value in self.keymap.items()})
 
     def input(self, prompt: str|None = None) -> str:
