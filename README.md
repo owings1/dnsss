@@ -2,36 +2,92 @@
 
 DNS Server Selection algorithm demonstrations.
 
-## Requirements
+## Install
 
-- Python 3.13
-- See requirements.txt
+- Requires Python 3.13
+- Create a virtual environment and install requirements.txt
 
-## Bind algorithm
+## Usage
 
-Basic Usage:
-
-```sh
-python3 -m dnsss.bind example.com
-```
-
-Press enter to repeat query.
-
-Advanced Usage Example.
-
-Read from config file (see config.example.yml), query every 100ms for 500 queries, make it pretty.
+Basic usage:
 
 ```sh
-python3 -m dnsss.bind example.com -f config.yml -n 0.1 -c 500 | jq
+python3 -m dnsss
 ```
 
-## AR1 autoregression algorithm
+This starts in interactive mode using the `config.example.yml` file and the `bind` algorithm.
+Press `<enter>` to execute a query, and `?` to see available commands.
 
-Basic Usage:
+To see all command line options, run:
 
 ```sh
-python3 -m dnsss.ar1 example.com
+python3 -m dnsss -h
 ```
+
+### Examples
+
+Specify config file and algorithm:
+
+```sh
+python3 -m dnsss -f config.yml -a ar1
+```
+
+In interactive mode, type `s` to save the state to a file `state.<alg>.yml`, e.g. `state.ar1.yml`.
+
+You can specify a different filename with `-o output.yml`.
+
+To save the file automatically, provide the `-s` flag.
+
+To load the state file, specify the `-l` parameter.
+
+To load from one file and save to another, you can do `-l load.yml -o output.yml`.
+
+To run queries at an interval, you can specify the `-n` parameter, or adjust interactively
+using `+`/`-`. To run a specific number of queries and quit, use `-c`.
+
+## Config File
+
+The config file supports the keys `servers`, `params`, and `questions`.
+
+### Servers
+
+A non-empty list of server IP addresses. Example:
+
+```yaml
+servers:
+  - 8.8.8.8
+  - 8.8.4.4
+  - 1.1.1.1
+  - 129.250.35.250
+  - 208.67.222.222
+```
+
+### Params
+
+An optional map to configure the algorithm parameters. See each algorithm for
+supported data. Extra/unknown keys are ignored. Example:
+
+```yaml
+params:
+
+```
+
+### Questions
+
+A list of DNS questions or references to files from which to load them. Example:
+
+```yaml
+questions:
+  # Defaults to an A record
+  - plato.stanford.edu
+  - google.com TXT
+  - burgers.internal AAAA
+  # File reference
+  - '@questions.dns'
+```
+
+If no values are provided, it defaults to `google.com`. For file syntax, see `questions.example.dns`.
+
 
 ## References
 
