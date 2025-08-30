@@ -138,7 +138,7 @@ class BaseCommand:
 
     def readtty(self) -> None:
         start = time.monotonic()
-        sargs = ([self.stdin.fileno()], [], [], 0)
+        sargs = ([self.stdin.fileno()], [], [], 0.01)
         while True:
             if select(*sargs)[0]:
                 key = self.stdin.read(1).upper()
