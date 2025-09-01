@@ -12,7 +12,8 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 from select import select
-from typing import Annotated, ClassVar, Sequence
+from typing import (Annotated, Any, ClassVar, Iterable, Iterator, Literal,
+                    Sequence)
 
 import yaml
 
@@ -23,6 +24,7 @@ from .utils import linefilter
 BASEDIR = Path(__file__).resolve().parent.parent
 DEFAULT_ALG = 'bind'
 DEFAULT_CONFIG = BASEDIR/'config.example.yml'
+DEFAULT_FORMAT = 'yaml'
 DEFAULT_QNAME = 'google.com'
 INTERVAL_MAX = 300.0
 INTERVAL_MIN = 0.001
@@ -73,12 +75,12 @@ class UserContinue(Exception):
 class MainOptions(CommandOptions):
     alg: Annotated[str, BeforeValidator(valalg)] = DEFAULT_ALG
     config: Path = DEFAULT_CONFIG
-    interval: RTime = 0.0
+    interval: NonNegativeFloat = 0.0
     count: NonNegativeInt = 0
     output: Path|None = None
     load: Path|None = None
-    yaml: bool = False
     save: bool = False
+    format: Literal['json', 'yaml'] = DEFAULT_FORMAT
 
 class MainCommand(BaseCommand[MainOptions]):
     prog: ClassVar = 'dnsss'
@@ -94,14 +96,43 @@ class MainCommand(BaseCommand[MainOptions]):
         super().add_arguments(parser)
         arg = parser.add_argument
         defaults = cls.options_model()
-        arg('--alg', '-a', default=defaults.alg, type=valalg, choices=list(registry), help='Resolver algorithm')
-        arg('--config', '-f', default=defaults.config, help='Path to YAML config file')
-        arg('--interval', '-n', default=defaults.interval, help='Poll interval')
-        arg('--count', '-c', default=defaults.count, help='Number of queries after which to quit')
-        arg('--output', '-o', default=..., help='File to write state on save')
-        arg('--save', '-s', action='store_true', help='Save state file automatically')
-        arg('--load', '-l', nargs='?', default=..., help='Load state from file')
-        arg('--yaml', action='store_true', help='Print YAML')
+        arg(
+            '--alg', '-a',
+            default=defaults.alg,
+            type=valalg,
+            choices=list(registry),
+            help='Resolver algorithm')
+        arg(
+            '--config', '-f',
+            default=defaults.config,
+            help='Path to YAML config file')
+        arg(
+            '--interval', '-n',
+            default=defaults.interval,
+            help='Poll interval')
+        arg(
+            '--count', '-c',
+            default=defaults.count,
+            help='Number of queries after which to quit')
+        arg(
+            '--output', '-o',
+            default=...,
+            help='File to write state on save')
+        arg(
+            '--save', '-s',
+            action='store_true',
+            help='Save state file automatically')
+        arg(
+            '--load', '-l',
+            nargs='?',
+            default=...,
+            help='Load state from file')
+        arg(
+            '--format', '-F',
+            default=defaults.format,
+            type=str.lower,
+            choices=['json', 'yaml'],
+            help=f'Output format, default {defaults.format}')
 
     def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
         alg = valalg(opts.alg)
@@ -117,11 +148,12 @@ class MainCommand(BaseCommand[MainOptions]):
         self.stdout = sys.stdout
         self.paused = False
         self.count = 0
+        self.anomaly: Anomaly|None = None
 
     def run(self) -> None:
         self.setup()
         with self.ttycontext():
-            self.report(self.resolver.state())
+            self.report(self.resolver.state.report())
             if self.stdin.isatty():
                 tty.setcbreak(self.stdin.fileno())
             try:
@@ -134,25 +166,21 @@ class MainCommand(BaseCommand[MainOptions]):
         self.tcorgattr = self.stdin.isatty() and termios.tcgetattr(self.stdin.fileno())
         with self.opts.config.open() as file:
             config = yaml.safe_load(file)
-        qraws = isinstance(config, dict) and config.pop('questions', None) or [DEFAULT_QNAME]
-        qstrs: deque[str] = deque()
-        for qraw in qraws:
-            if isinstance(qraw, str) and qraw.startswith('@'):
-                qfile = Path(self.opts.config.parent, qraw[1:])
-                with qfile.open() as file:
-                    qstrs.extend(map(str.rstrip, filter(linefilter, file.readlines())))
-            else:
-                qstrs.append(qraw)
-        qargs = ((qstr.split(maxsplit=1) + ['A'])[:2] for qstr in qstrs)
-        self.questions = [
-            Question(qname=qname, rdtype=rdtype)
-            for qname, rdtype in qargs]
-        self.resolver = registry[self.opts.alg](config)
+        qentries = (
+            isinstance(config, dict) and config.pop('questions', None) or
+            [DEFAULT_QNAME])
+        self.questions = list(
+            resolve_questions(qentries, self.opts.config.parent))
+        self.anomalies = deque(
+            map(Anomaly.model_validate, config.pop('anomalies', [])))
+        self.resolver = registry[self.opts.alg](config=config)
         if self.opts.load:
             with self.opts.load.open() as file:
-                self.resolver.load(yaml.safe_load(file))
+                self.resolver.state = self.resolver.state.model_validate(
+                    yaml.safe_load(file))
 
     def loop(self) -> None:
+        self.prep_anomaly()
         if self.stdin.isatty():
             try:
                 self.readtty()
@@ -168,13 +196,33 @@ class MainCommand(BaseCommand[MainOptions]):
         except:
             logger.exception(f'Query failed')
         else:
-            self.report(rep.model_dump() | self.resolver.state(terse=True))
+            report = dict(query=rep.model_dump())
+            if self.anomaly:
+                if self.anomaly.limit is not None:
+                    self.anomaly.limit -= 1
+                report.update(anomaly=self.anomaly.model_dump())
+            report.update(state=self.resolver.state.report())
+            self.report(report)
         finally:
             if self.opts.save:
                 self.save()
         self.count += 1
         if self.count >= self.opts.count > 0:
             raise UserQuit
+
+    def prep_anomaly(self) -> None:
+        while True:
+            if self.anomaly and (
+                self.anomaly.limit is None or
+                self.anomaly.limit > 0):
+                self.resolver.delayers = self.anomaly.delayers
+                break
+            if self.anomalies:
+                self.anomaly = self.anomalies.popleft()
+                continue
+            self.anomaly = None
+            self.resolver.delayers = []
+            break
 
     def readtty(self) -> None:
         start = time.monotonic()
@@ -189,31 +237,35 @@ class MainCommand(BaseCommand[MainOptions]):
 
     def save(self) -> None:
         with self.opts.output.open('w') as file:
-            yaml.safe_dump(self.resolver.state(), file, sort_keys=False)
+            yaml.safe_dump(self.resolver.state.model_dump(), file, sort_keys=False)
 
     def report(self, *args, **kw) -> None:
         info = dict(*args, **kw)
         stdout = self.stdout
-        if self.opts.yaml:
+        if self.opts.format == 'json':
+            json.dump(info, stdout, indent=2)
+            stdout.write('\n')
+        elif self.opts.format == 'yaml':
             yaml.safe_dump(info, stdout, sort_keys=False)
             stdout.write('\n---\n')
             if not stdout.isatty():
                 # Piping to yq needs this
                 stdout.write('---\n---\n')
         else:
-            json.dump(info, stdout, indent=2)
-            stdout.write('\n')
+            raise NotImplementedError
         stdout.flush()
 
     @contextmanager
     def ttycontext(self, when: int = termios.TCSADRAIN):
+        if not self.stdin.isatty():
+            yield
+            return
         fdin = self.stdin.fileno()
-        tcattr = self.stdin.isatty() and termios.tcgetattr(fdin)
+        tcattr = termios.tcgetattr(fdin)
         try:
             yield
         finally:
-            if tcattr:
-                termios.tcsetattr(fdin, when, tcattr)
+            termios.tcsetattr(fdin, when, tcattr)
 
 class KeyAction:
     keymap: ClassVar[dict[str, str]] = {
@@ -255,7 +307,7 @@ class KeyAction:
         cmd = self.cmd
         opt = self.input('Set interval')
         try:
-            interval = valrtime(opt or cmd.opts.interval)
+            interval = valnnf(opt or cmd.opts.interval)
         except ValidationError as err:
             cmd.report(error=str(err))
         else:
@@ -266,24 +318,26 @@ class KeyAction:
 
     def cmd_anomaly(self) -> None:
         cmd = self.cmd
-        opt = self.input('Set anomaly <pat>/<delay>/<duration>')
+        opt = self.input('Set anomaly: <pat>/<delay>[/[limit]]')
         if opt:
+            parts = opt.removesuffix('/').split('/')
+            if len(parts) == 2:
+                parts.append(None)
             try:
-                pat, delay, duration = opt.split('/')
+                pat, delay, limit = parts
                 anomaly = Anomaly(
-                    pat=pat,
-                    delay=delay,
-                    duration=duration)
-            except (ValueError, ValidationError) as err:
+                    limit=limit,
+                    delayers=[dict(pat=pat, delay=delay)])
+            except ValueError as err:
                 cmd.report(error=str(err))
                 return
             else:
-                anomdata = anomaly.model_dump(mode='json', exclude=['expiry'])
-                cmd.report(anomaly=anomdata)
+                cmd.report(anomaly=anomaly.model_dump())
         else:
             anomaly = None
             cmd.report(anomaly=anomaly)
-        cmd.resolver.anomaly = anomaly
+        cmd.anomaly = anomaly
+        cmd.prep_anomaly()
 
     def cmd_faster(self) -> None:
         cmd = self.cmd
@@ -313,3 +367,17 @@ class KeyAction:
             if stdin.isatty():
                 termios.tcsetattr(stdin.fileno(), termios.TCSANOW, cmd.tcorgattr)
             return stdin.readline().strip()
+
+def resolve_questions(entries: Iterable[Any], cwd: Path) -> Iterator[Question]:
+    qkeys = ('qname', 'rdtype')
+    for qraw in entries:
+        if isinstance(qraw, str) and qraw.startswith('@'):
+            with cwd.joinpath(qraw[1:]).open() as file:
+                it = filter(linefilter, file.readlines())
+                it = map(str.rstrip, it)
+        else:
+            it = [qraw]
+        for qstr in it:
+            qvals = (qstr.split(maxsplit=1) + ['A'])[:2]
+            yield Question.model_validate(dict(zip(qkeys, qvals)))
+

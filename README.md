@@ -47,22 +47,20 @@ using `+`/`-`. To run a specific number of queries and quit, use `-c`.
 
 ## Config File
 
-The main config file keys are `servers`, `params`, and `questions`.
+Config file reference.
 
-### Servers
+### `servers`
 
-A non-empty list of server IP addresses. Example:
+A non-empty list of server addresses. Example:
 
 ```yaml
 servers:
   - 8.8.8.8
-  - 8.8.4.4
-  - 1.1.1.1
-  - 129.250.35.250
-  - 208.67.222.222
+  # Optional port
+  - 127.0.0.1@5353
 ```
 
-### Params
+### `params`
 
 An optional map to configure the algorithm parameters. See each algorithm for
 supported data. Extra/unknown keys are ignored. Example:
@@ -79,7 +77,7 @@ params:
   alpha_max: 0.9
 ```
 
-### Questions
+### `questions`
 
 A list of DNS questions or references to files from which to load them. Example:
 
@@ -87,13 +85,44 @@ A list of DNS questions or references to files from which to load them. Example:
 questions:
   # Defaults to an A record
   - plato.stanford.edu
-  - google.com TXT
   - burgers.internal AAAA
+  # Reverse PTR
+  - 129.6.15.28 PTR
+  - 1.96.163.132.in-addr.arpa PTR
   # File reference
   - '@questions.dns'
 ```
 
 If no values are provided, it defaults to `google.com`. For file syntax, see `questions.example.dns`.
+
+### `anomalies`
+
+A list of latency injection config mappings. Example:
+
+```yaml
+anomalies:
+  - # The number of queries to remain active
+    limit: 100
+    delayers:
+      - # Server regex to target
+        pat: '10\.123'
+        # The delay to add
+        delay: 0.01
+  # This removes any delay for the next 100 queries
+  - limit: 100
+  # A limit of 0 will be skipped
+  - limit: 0
+    # These won't run
+    delayers:
+      - pat: .*
+        delay: 0.5
+  # A null/missing limit means run forever
+  - limit: null
+    delayers:
+      - pat: '192.168'
+        delay: 0.001
+```
+
 
 ### Other Config
 
@@ -110,3 +139,9 @@ tcp: false
   2008 3rd International Conference on Communication Systems Software and Middleware and Workshops
   (COMSWARE '08), Bangalore, India, 2008, pp. 288-295, doi: 10.1109/COMSWA.2008.4554428.
   https://ieeexplore.ieee.org/document/4554428
+    
+- Welford's online algorithm
+  https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Welford%27s_online_algorithm
+
+- "Accurately computing running variance"
+  https://www.johndcook.com/blog/standard_deviation/

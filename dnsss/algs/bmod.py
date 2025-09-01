@@ -13,7 +13,7 @@ for recovery of temporary increased latency.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated
 
 from ..models import *
 from ..utils import *
@@ -24,32 +24,25 @@ class Params(bind.Params):
     k: PositiveInt = 4
     'Sample width for computing mean response time (last-k)'
 
+class Config(bind.Config):
+    params: Params = Field(default_factory=Params)
+
+class State(bind.State):
+    SKM: Annotated[
+        dict[Server, RunningMean],
+        PlainSerializer(lambda x: dvsorted(x))] = Field(default_factory=dict)
+
+    def post_config_init(self, config: Config) -> None:
+        super().post_config_init(config)
+        self.SKM = {Si: RunningMean() for Si in config.servers}
+
 class Resolver(bind.Resolver):
+    config: Config
+    state: State = Field(default_factory=State)
 
-    class Config(bind.Resolver.Config):
-        params: Params = Field(default_factory=Params)
-
-    kmeans: dict[Server, RTime]
-    config: Resolver.Config
-
-    def __init__(self, config: Any) -> None:
-        super().__init__(config)
-        self.kmeans = dict.fromkeys(self.config.servers, 0.0)
-
-    def adjust(self, S: Server, R: RTime) -> None:
+    def adjust(self, S: Server, R: NonNegativeFloat) -> None:
         super().adjust(S, R)
-        k = self.config.params.k
-        if self.counts[S] <= k:
-            self.kmeans[S] = self.means[S]
-        else:
-            self.kmeans[S] = addmean(R, self.kmeans[S], k)
-        self.SR[S] = max(self.SR[S], self.kmeans[S])
-
-    def state(self, *, terse: bool = False):
-        return dict(
-            kmeans=dvsorted(self.kmeans, reverse=True),
-            **super().state())
-
-    def load(self, state: dict[str, Any]) -> None:
-        super().load(state)
-        self.kmeans = state['kmeans']
+        KM = self.state.SKM[S]
+        KM.observe(R)
+        KM.count = max(KM.count, self.config.params.k)
+        self.state.SR[S] = max(self.state.SR[S], KM.mean)
