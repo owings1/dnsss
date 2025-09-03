@@ -10,22 +10,22 @@ Reference:
 """
 from __future__ import annotations
 
-from typing import Annotated, Any, ClassVar
+from typing import Annotated, Any
 
 from ..models import *
-from ..utils import *
+from ..utils import dvsorted
 from . import bind
 
 
 class Params(bind.Params):
-    P_count_min: PositiveInt = 4
+    p_count_min: PositiveInt = 4
     'Minimum sample size before using AR prediction for a server'
     alpha_min: PositiveFloat = 0.1
     'Minimum value for AR volatility parameter (alpha)'
     alpha_max: PositiveFloat = 0.9
     'Maximum value for AR volatility parameter (alpha)'
-    stale_max: PositiveInt = 100
-    'Maximum number of queries before a slow server is tried again'
+    idle_max: PositiveInt = 100
+    'Maximum idle count before a server is tried again'
     drc_count_min: PositiveInt = 50
     'Minimum sample size before deviation reset counter is checked'
     drc_consec: PositiveInt = 5
@@ -43,7 +43,7 @@ class ARStats(RunningVariance):
     """
     The predicted response time of the next query to this server. This will
     only start to be calculated once the sample size is large enough, as
-    configured by `P_count_min`.
+    configured by `p_count_min`.
     """
     alpha: NonNegativeFloat = 0.0
     """
@@ -59,15 +59,15 @@ class ARStats(RunningVariance):
     idle: NonNegativeInt = 0
     """
     The number of queries the resolver has made to other servers since this
-    server was accessed. When this reaches `stale_max`, this server will be
+    server was accessed. When this reaches `idle_max`, this server will be
     selected. This ensures that slow servers are contacted periodically.
     """
     drc: NonNegativeInt = 0
     'Deviation reset counter'
     params: Params = Field(default_factory=Params, exclude=True)
-    model_config: ClassVar = ConfigDict(
+    model_config = ConfigDict(
         ordering_attribute='P',
-        terse_exclude=['idle', 'mean_v2', 'mean_xy', 'delta_m2', 'variance'])
+        terse_exclude=['mean_v2', 'mean_xy', 'delta_m2', 'variance'])
 
     def observe(self, value: NonNegativeFloat) -> None:
         params = self.params
@@ -142,51 +142,49 @@ class ARStats(RunningVariance):
             setattr(self, name, value)
         self.alpha = self.params.alpha_min
 
-    @property
-    def stale(self) -> bool:
-        return self.idle >= self.params.stale_max
-
 class State(bind.State):
-    AR: Annotated[
+    SAR: Annotated[
         dict[Server, ARStats],
         PlainSerializer(dvsorted)] = Field(default_factory=dict)
     params: Params = Field(default_factory=Params, exclude=True)
-    model_config: ClassVar = ConfigDict(terse_exclude=['SR'])
+    model_config = ConfigDict(sfields=['SAR', 'SR', 'SM'])
 
-    def addserver(self, S: Server) -> None:
-        super().addserver(S)
-        self.AR[S] = ARStats(params=self.params)
-        self.AR[S].reset()
+    def add(self, S: Server) -> None:
+        super().add(S)
+        if S not in self.SAR:
+            self.SAR[S] = ARStats(params=self.params)
+            self.SAR[S].reset()
 
     def observe(self, S: Server, R: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
         super().observe(S, R, code, servers)
         for Si in servers:
-            ARi = self.AR[Si]
+            ARi = self.SAR[Si]
             if Si == S:
                 ARi.observe(R)
             else:
                 ARi.idle += 1
             # Compute prediction
-            if ARi.count >= self.params.P_count_min:
+            if ARi.count >= self.params.p_count_min:
                 ARi.predict()
 
     def rank(self, S: Server) -> float:
+        AR = self.SAR[S]
         return (
-            # For stale servers, rank stalest first.
-            self.AR[S].stale and -float(self.AR[S].idle) or
+            # For idle servers, rank idlest first.
+            AR.idle > self.params.idle_max and -float(AR.idle) or
             # Rank based on AR prediction if available.
-            self.AR[S].P or
+            AR.P or
             # Fall back to BIND algorithm.
             super().rank(S))
 
-    def load(self, data: Any):
+    def load(self, data: Any) -> None:
         super().load(data)
-        for ARi in self.AR.values():
+        for ARi in self.SAR.values():
             ARi.params = self.params
 
 class Config(bind.Config):
-    params: Params = Field(default_factory=Params)
+    params: Params = Field(default_factory=Params, frozen=True)
 
 class Resolver(bind.Resolver):
-    config: Config = Field(default_factory=Config)
-    state: State = Field(default_factory=State)
+    config: Config = Field(default_factory=Config, frozen=True)
+    state: State = Field(default_factory=State, frozen=True)

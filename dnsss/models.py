@@ -4,15 +4,15 @@ import ipaddress
 import math
 import operator
 import re
-from typing import Annotated, Callable, ClassVar, Literal, Self
+from typing import Annotated, Any, Callable, Literal, Self
 
 import pydantic
 from pydantic import (AfterValidator, BeforeValidator, ConfigDict, Field,
-                      NonNegativeFloat, NonNegativeInt, PlainSerializer,
-                      PositiveFloat, PositiveInt, SerializationInfo,
-                      SerializerFunctionWrapHandler, TypeAdapter,
-                      ValidationError, field_serializer, model_serializer,
-                      model_validator)
+                      NegativeInt, NonNegativeFloat, NonNegativeInt,
+                      PlainSerializer, PositiveFloat, PositiveInt,
+                      SerializationInfo, SerializerFunctionWrapHandler,
+                      TypeAdapter, ValidationError, field_serializer,
+                      model_serializer, model_validator)
 
 __all__ = [
     'AfterValidator',
@@ -24,6 +24,7 @@ __all__ = [
     'DomainRule',
     'Field',
     'field_serializer',
+    'MockServer',
     'model_serializer',
     'NonNegativeFloat',
     'NonNegativeInt',
@@ -50,6 +51,9 @@ type Rset = list[str]
 type RdType = Annotated[
     Literal['A', 'AAAA', 'CNAME', 'PTR', 'NS', 'TXT', 'MX', 'SOA', 'SRV'],
     BeforeValidator(str.upper)]
+type Domain = Annotated[
+    str,
+    AfterValidator(lambda x: x.strip('.').lower())]
 
 NonNegFloatTa = TypeAdapter(NonNegativeFloat)
 
@@ -64,6 +68,10 @@ def valpat(value: str) -> str:
     return value
 
 class BaseModel(pydantic.BaseModel):
+
+    def report(self, **kw) -> dict[str, Any]:
+        kw.setdefault('context', {}).update(terse=True)
+        return self.model_dump(**kw)
 
     @model_serializer(mode='wrap')
     def _ser(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> dict:
@@ -86,16 +94,24 @@ class BaseModel(pydantic.BaseModel):
         return generic_ordering(operator.ge, self, other)
 
 class DomainRule(BaseModel):
-    domain: Annotated[
-        str,
-        AfterValidator(lambda x: x.strip('.'))] = Field(min_length=1)
+    domain: Domain = Field(min_length=1, frozen=True)
     servers: list[Server] = Field(min_length=1)
-    model_config: ClassVar[ConfigDict] = ConfigDict(
-        ordering_attribute='order')
+    exclude: list[Domain] = Field(default_factory=list)
+    model_config = ConfigDict(ordering_attribute='order')
 
     @property
-    def order(self) -> int:
-        return - len(self.domain)
+    def order(self) -> NegativeInt:
+        return -len(self.domain)
+
+    def matches(self, qname: str) -> bool:
+        qname = qname.rstrip('.').lower()
+        if qname == self.domain or qname.endswith(f'.{self.domain}'):
+            for excl in self.exclude:
+                if qname == excl or qname.endswith(f'.{excl}'):
+                    break
+            else:
+                return True
+        return False
 
 class Response(BaseModel):
     S: Server
@@ -104,6 +120,17 @@ class Response(BaseModel):
     code: Rcode
     rset: Rset
     failed: list[Server]|None = None
+
+    def report(self, **kw) -> dict[str, Any]:
+        kw['exclude_none'] = True
+        data = super().report(**kw)
+        data['q'] = f'{self.q.qname} {self.q.rdtype}'
+        data['rset'] = len(self.rset)
+        return data
+
+class MockServer(BaseModel):
+    r: PositiveFloat = 0.005
+    volatility: NonNegativeFloat = 0.1
 
 class Delayer(BaseModel):
     pat: Annotated[str, AfterValidator(valpat)]
@@ -133,8 +160,7 @@ class RunningMean(BaseModel):
     'Total sample count'
     mean: NonNegativeFloat = 0.0
     'Running mean'
-    model_config: ClassVar[ConfigDict] = ConfigDict(
-        ordering_attribute='mean')
+    model_config = ConfigDict(ordering_attribute='mean')
 
     def observe(self, value: NonNegativeFloat) -> None:
         self.count += 1

@@ -1,50 +1,38 @@
 """
 Modified BIND algorithm with the following optimization:
 
+Compute a value RM for each server S just like the BIND R value, except that RM
+is not discounted when S is not queried.
+
 When adjusting the computed R value for the server S that was just queried,
 use the maximum of:
 
      i. The value as computed according to the original BIND algorithm
-    ii. The mean observed response time of the last k queries to S
+    ii. The value of RM
 
 The idea is to increase the penalty for slower-responding servers, so that
-they are contacted less frequently, but to keep k sufficiently small to allow
-for recovery of temporary increased latency.
+they are contacted less frequently.
 """
 from __future__ import annotations
 
-from typing import Annotated
-
 from ..models import *
-from ..utils import *
 from . import bind
 
 
-class Params(bind.Params):
-    k: PositiveInt = 4
-    'Sample width for computing mean response time (last-k)'
-
 class State(bind.State):
-    SKM: Annotated[
-        dict[Server, RunningMean],
-        PlainSerializer(dvsorted)] = Field(default_factory=dict)
-    params: Params = Field(default_factory=Params, exclude=True)
+    SRM: dict[Server, NonNegativeFloat] = Field(default_factory=dict)
+    model_config = ConfigDict(sfields=['SR', 'SRM', 'SM'])
 
-    def addserver(self, S: Server) -> None:
-        super().addserver(S)
-        self.SKM[S] = RunningMean()
+    def add(self, S: Server) -> None:
+        super().add(S)
+        if S not in self.SRM:
+            self.SRM[S] = 0.0
 
     def observe(self, S: Server, R: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
         super().observe(S, R, code, servers)
-        self.SKM[S].observe(R)
-        self.SKM[S].count = max(self.SKM[S].count, self.params.k)
-
-    def rank(self, S: Server) -> float:
-        return max(super().rank(S), self.SKM[S].mean)
-
-class Config(bind.Config):
-    params: Params = Field(default_factory=Params)
+        a = self.SRM[S] and self.params.a
+        self.SRM[S] = a * self.SRM[S] + (1 - a) * R
+        self.SR[S] = max(self.SR[S], self.SRM[S])
 
 class Resolver(bind.Resolver):
-    config: Config = Field(default_factory=Config)
-    state: State = Field(default_factory=State)
+    state: State = Field(default_factory=State, frozen=True)

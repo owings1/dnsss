@@ -29,11 +29,6 @@ class Params(base.Params):
     the R value for all other servers is always decreased, thus ensuring
     their eventual selection.
     """
-    o: NonNegativeFloat = 0.0
-    """
-    The initial value of R for all servers. This is somewhat arbitrary, and
-    only affects startup, since R values eventually converge.
-    """
 
 class State(base.State):
     SR: Annotated[
@@ -47,26 +42,31 @@ class State(base.State):
     eventually selected, and R increases.
     """
     params: Params = Field(default_factory=Params, exclude=True)
+    model_config = ConfigDict(sfields=['SR', 'SM'])
 
-    def addserver(self, S: Server) -> None:
-        super().addserver(S)
-        self.SR[S] = self.params.o
+    def add(self, S: Server) -> None:
+        super().add(S)
+        if S not in self.SR:
+            self.SR[S] = 0.0
 
     def observe(self, S: Server, R: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
         super().observe(S, R, code, servers)
-        a = self.params.a
-        g = self.params.g
         for Si in servers:
             Ri = self.SR[Si]
             if Si == S:
                 # For the selected server, the new value is the weighted
                 # average of the prior value (Ri) and the measured response
                 # time (R).
+                #
+                # On the first query, the prior value (Ri) will be 0, so we
+                # override (a) to 0, which will make the initial value of (R)
+                # equal to the first observed value.
+                a = Ri and self.params.a
                 r = a * Ri + (1 - a) * R
             else:
                 # For all other servers, the value is slightly decreased by
                 # a fixed coefficient (g).
-                r = g * Ri
+                r = self.params.g * Ri
             self.SR[Si] = r
 
     def rank(self, S: Server) -> float:
@@ -74,8 +74,8 @@ class State(base.State):
         return self.SR[S]
 
 class Config(base.Config):
-    params: Params = Field(default_factory=Params)
+    params: Params = Field(default_factory=Params, frozen=True)
 
 class Resolver(base.Resolver):
-    config: Config = Field(default_factory=Config)
-    state: State = Field(default_factory=State)
+    config: Config = Field(default_factory=Config, frozen=True)
+    state: State = Field(default_factory=State, frozen=True)

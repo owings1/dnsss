@@ -23,8 +23,9 @@ from .utils import linefilter
 
 BASEDIR = Path(__file__).resolve().parent.parent
 DEFAULT_ALG = 'bind'
-DEFAULT_FORMAT = 'yaml'
+DEFAULT_FORMAT = 'table'
 DEFAULT_QNAME = 'google.com'
+DEFAULT_TABLEFMT = 'simple'
 INTERVAL_MAX = 300.0
 INTERVAL_MIN = 0.001
 SELECT_TIMEOUT = 0.01
@@ -79,7 +80,8 @@ class MainOptions(CommandOptions):
     output: Path|None = None
     load: Path|None = None
     save: bool = False
-    format: Literal['json', 'yaml'] = DEFAULT_FORMAT
+    format: Literal['json', 'yaml', 'table'] = DEFAULT_FORMAT
+    tablefmt: str = DEFAULT_TABLEFMT
 
 class MainCommand(BaseCommand[MainOptions]):
     prog: ClassVar = 'dnsss'
@@ -130,7 +132,7 @@ class MainCommand(BaseCommand[MainOptions]):
             '--format', '-F',
             default=defaults.format,
             type=str.lower,
-            choices=['json', 'yaml'],
+            choices=['json', 'yaml', 'table'],
             help=f'Output format, default {defaults.format}')
 
     def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
@@ -152,7 +154,8 @@ class MainCommand(BaseCommand[MainOptions]):
     def run(self) -> None:
         self.setup()
         with self.ttycontext():
-            self.report(self.resolver.state.report())
+            table = self.opts.format == 'table' and self.opts.tablefmt
+            self.report(state=self.resolver.state.report(table=table))
             if self.stdin.isatty():
                 tty.setcbreak(self.stdin.fileno())
             try:
@@ -197,12 +200,14 @@ class MainCommand(BaseCommand[MainOptions]):
         except:
             logger.exception(f'Query failed')
         else:
-            report = dict(query=rep.model_dump(exclude_none=True))
+            report = dict(query=rep.report())
             if self.anomaly:
                 if self.anomaly.limit is not None:
                     self.anomaly.limit -= 1
                 report.update(anomaly=self.anomaly.model_dump())
-            report.update(state=self.resolver.state.report())
+            table = self.opts.format == 'table' and self.opts.tablefmt
+            state = self.resolver.state.report(table=table)
+            report.update(state=state)
             self.report(report)
         finally:
             if self.opts.save:
@@ -246,8 +251,8 @@ class MainCommand(BaseCommand[MainOptions]):
         if self.opts.format == 'json':
             json.dump(info, stdout, indent=2)
             stdout.write('\n')
-        elif self.opts.format == 'yaml':
-            yaml.safe_dump(info, stdout, sort_keys=False)
+        elif self.opts.format in ('yaml', 'table'):
+            yaml.dump(info, stdout, sort_keys=False, width=float('inf'))
             stdout.write('\n---\n')
             if not stdout.isatty():
                 # Piping to yq needs this
@@ -381,4 +386,3 @@ def resolve_questions(entries: Iterable[Any], cwd: Path) -> Iterator[Question]:
         for qstr in it:
             qvals = (qstr.split(maxsplit=1) + ['A'])[:2]
             yield Question.model_validate(dict(zip(qkeys, qvals)))
-

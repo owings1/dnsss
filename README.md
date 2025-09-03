@@ -68,27 +68,12 @@ A list of domain rule configs. Example:
 
 ```yaml
 rules:
-  - domain: my.domain.internal
+  - domain: domain.internal
     servers:
       - 10.0.0.1
       - 10.0.0.2
-```
-
-### `params`
-
-An optional map to configure the algorithm parameters. See each algorithm for
-supported data. Extra/unknown keys are ignored. Example:
-
-```yaml
-params:
-  # See bind resolver
-  g: 0.98
-  o: 0.05
-  # See bmod resolver
-  k: 4
-  # See ar1 resolver
-  alpha_min: 0.1
-  alpha_max: 0.9
+    exclude:
+      - ext.domain.internal
 ```
 
 ### `questions`
@@ -105,6 +90,20 @@ questions:
   - 1.96.163.132.in-addr.arpa PTR
   # File reference
   - '@questions.dns'
+```
+
+### `params`
+
+An optional map to configure the algorithm parameters. See each algorithm for
+supported data. Extra/unknown keys are ignored. Example:
+
+```yaml
+params:
+  # See bind resolver
+  g: 0.98
+  # See ar1 resolver
+  alpha_min: 0.1
+  alpha_max: 0.9
 ```
 
 If no values are provided, it defaults to `google.com`. For file syntax, see `questions.example.dns`.
