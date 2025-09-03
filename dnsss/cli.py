@@ -23,7 +23,6 @@ from .utils import linefilter
 
 BASEDIR = Path(__file__).resolve().parent.parent
 DEFAULT_ALG = 'bind'
-DEFAULT_CONFIG = BASEDIR/'config.example.yml'
 DEFAULT_FORMAT = 'yaml'
 DEFAULT_QNAME = 'google.com'
 INTERVAL_MAX = 300.0
@@ -74,7 +73,7 @@ class UserContinue(Exception):
 
 class MainOptions(CommandOptions):
     alg: Annotated[str, BeforeValidator(valalg)] = DEFAULT_ALG
-    config: Path = DEFAULT_CONFIG
+    config: Path|None = None
     interval: NonNegativeFloat = 0.0
     count: NonNegativeInt = 0
     output: Path|None = None
@@ -164,20 +163,22 @@ class MainCommand(BaseCommand[MainOptions]):
 
     def setup(self) -> None:
         self.tcorgattr = self.stdin.isatty() and termios.tcgetattr(self.stdin.fileno())
-        with self.opts.config.open() as file:
-            config = yaml.safe_load(file)
+        if self.opts.config:
+            cwd = self.opts.config.parent
+            with self.opts.config.open() as file:
+                config = yaml.safe_load(file)
+        else:
+            cwd = Path('.')
+            config = {}
         qentries = (
-            isinstance(config, dict) and config.pop('questions', None) or
-            [DEFAULT_QNAME])
-        self.questions = list(
-            resolve_questions(qentries, self.opts.config.parent))
+            config.pop('questions', None) or [DEFAULT_QNAME])
+        self.questions = list(resolve_questions(qentries, cwd))
         self.anomalies = deque(
             map(Anomaly.model_validate, config.pop('anomalies', [])))
         self.resolver = registry[self.opts.alg](config=config)
         if self.opts.load:
             with self.opts.load.open() as file:
-                self.resolver.state = self.resolver.state.model_validate(
-                    yaml.safe_load(file))
+                self.resolver.state.load(yaml.safe_load(file))
 
     def loop(self) -> None:
         self.prep_anomaly()
@@ -196,7 +197,7 @@ class MainCommand(BaseCommand[MainOptions]):
         except:
             logger.exception(f'Query failed')
         else:
-            report = dict(query=rep.model_dump())
+            report = dict(query=rep.model_dump(exclude_none=True))
             if self.anomaly:
                 if self.anomaly.limit is not None:
                     self.anomaly.limit -= 1

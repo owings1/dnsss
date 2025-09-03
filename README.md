@@ -15,7 +15,7 @@ Basic usage:
 python3 -m dnsss
 ```
 
-This starts in interactive mode using the `config.example.yml` file and the `bind` algorithm.
+This starts in interactive mode using system resolvers and the `bind` algorithm.
 Press `<enter>` to execute a query, and `?` to see available commands.
 
 To see all command line options, run:
@@ -51,13 +51,27 @@ Config file reference.
 
 ### `servers`
 
-A non-empty list of server addresses. Example:
+A non-empty list of default server addresses. Example:
 
 ```yaml
 servers:
   - 8.8.8.8
   # Optional port
   - 127.0.0.1@5353
+```
+
+If not provided, the system resolvers are used.
+
+### `rules`
+
+A list of domain rule configs. Example:
+
+```yaml
+rules:
+  - domain: my.domain.internal
+    servers:
+      - 10.0.0.1
+      - 10.0.0.2
 ```
 
 ### `params`
@@ -127,8 +141,12 @@ anomalies:
 ### Other Config
 
 ```yaml
-# Default timeout seconds
-timeout: 5.0
+# Default/max timeout seconds
+timeout_max: 5.0
+# Minimum timeout seconds
+timeout_min: 1.0
+# Maximum number of retries for timeouts
+retries_max: 3
 # Whether to use TCP for DNS queries
 tcp: false
 ```

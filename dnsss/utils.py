@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, TypeVar
 
 __all__ = [
     'bykey',
@@ -9,16 +9,19 @@ __all__ = [
     'dvsorted',
     'linefilter']
 
-def bykey[T](item: tuple[T, Any]) -> T:
+K = TypeVar('K')
+T = TypeVar('T')
+
+def bykey(item: tuple[T, Any]) -> T:
     return item[0]
 
-def byvalue[T](item: tuple[Any, T]) -> T:
+def byvalue(item: tuple[Any, T]) -> T:
     return item[1]
 
-def dsorted[K, V](mapping: Mapping[K, V], key: Callable[[tuple[K, V]], Any] = bykey, reverse: bool = False) -> dict[K, V]:
+def dsorted(mapping: Mapping[K, T], key: Callable[[tuple[K, T]], Any] = bykey, reverse: bool = False) -> dict[K, T]:
     return dict(sorted(mapping.items(), key=key, reverse=reverse))
 
-def dvsorted[K, V](mapping: Mapping[K, V], reverse: bool = False) -> dict[K, V]:
+def dvsorted(mapping: Mapping[K, T], reverse: bool = False) -> dict[K, T]:
     return dsorted(mapping, key=byvalue, reverse=reverse)
 
 def linefilter(line: str) -> bool:

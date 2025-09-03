@@ -2,24 +2,26 @@ from __future__ import annotations
 
 import ipaddress
 import math
+import operator
 import re
-from typing import Annotated, Literal, Self
+from typing import Annotated, Callable, ClassVar, Literal, Self
 
 import pydantic
-from pydantic import (AfterValidator, BeforeValidator, Field,
+from pydantic import (AfterValidator, BeforeValidator, ConfigDict, Field,
                       NonNegativeFloat, NonNegativeInt, PlainSerializer,
-                      ConfigDict,
-                      PositiveFloat, PositiveInt, TypeAdapter, ValidationError,
-                      model_serializer,SerializationInfo, SerializerFunctionWrapHandler,
-                      field_serializer, model_validator)
+                      PositiveFloat, PositiveInt, SerializationInfo,
+                      SerializerFunctionWrapHandler, TypeAdapter,
+                      ValidationError, field_serializer, model_serializer,
+                      model_validator)
 
 __all__ = [
+    'AfterValidator',
     'Anomaly',
-    'Answer',
     'BaseModel',
     'BeforeValidator',
     'ConfigDict',
     'Delayer',
+    'DomainRule',
     'Field',
     'field_serializer',
     'model_serializer',
@@ -29,8 +31,10 @@ __all__ = [
     'PositiveFloat',
     'PositiveInt',
     'Question',
+    'Rcode',
     'RdType',
     'Response',
+    'Rset',
     'RunningMean',
     'RunningVariance',
     'SerializationInfo',
@@ -41,7 +45,8 @@ __all__ = [
     'valpat']
 
 type Server = str
-type Answer = list[str]
+type Rcode = str
+type Rset = list[str]
 type RdType = Annotated[
     Literal['A', 'AAAA', 'CNAME', 'PTR', 'NS', 'TXT', 'MX', 'SOA', 'SRV'],
     BeforeValidator(str.upper)]
@@ -59,6 +64,7 @@ def valpat(value: str) -> str:
     return value
 
 class BaseModel(pydantic.BaseModel):
+
     @model_serializer(mode='wrap')
     def _ser(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> dict:
         data: dict = handler(self)
@@ -67,11 +73,37 @@ class BaseModel(pydantic.BaseModel):
                 data.pop(key, None)
         return data
 
+    def __lt__(self, other: Self):
+        return generic_ordering(operator.lt, self, other)
+
+    def __gt__(self, other: Self):
+        return generic_ordering(operator.gt, self, other)
+
+    def __lte__(self, other: Self):
+        return generic_ordering(operator.le, self, other)
+
+    def __gte__(self, other: Self):
+        return generic_ordering(operator.ge, self, other)
+
+class DomainRule(BaseModel):
+    domain: Annotated[
+        str,
+        AfterValidator(lambda x: x.strip('.'))] = Field(min_length=1)
+    servers: list[Server] = Field(min_length=1)
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        ordering_attribute='order')
+
+    @property
+    def order(self) -> int:
+        return - len(self.domain)
+
 class Response(BaseModel):
     S: Server
     R: NonNegativeFloat
     q: Question
-    a: Answer
+    code: Rcode
+    rset: Rset
+    failed: list[Server]|None = None
 
 class Delayer(BaseModel):
     pat: Annotated[str, AfterValidator(valpat)]
@@ -101,30 +133,12 @@ class RunningMean(BaseModel):
     'Total sample count'
     mean: NonNegativeFloat = 0.0
     'Running mean'
+    model_config: ClassVar[ConfigDict] = ConfigDict(
+        ordering_attribute='mean')
 
     def observe(self, value: NonNegativeFloat) -> None:
         self.count += 1
         self.mean += (value - self.mean) / self.count
-
-    def __lt__(self, other: Self):
-        if type(self) is type(other):
-            return self.mean < other.mean
-        return NotImplemented
-
-    def __gt__(self, other: Self):
-        if type(self) is type(other):
-            return self.mean > other.mean
-        return NotImplemented
-
-    def __lte__(self, other: Self):
-        if type(self) is type(other):
-            return self.mean <= other.mean
-        return NotImplemented
-
-    def __gte__(self, other: Self):
-        if type(self) is type(other):
-            return self.mean >= other.mean
-        return NotImplemented
 
 class RunningVariance(RunningMean):
     """
@@ -151,3 +165,9 @@ class RunningVariance(RunningMean):
         if self.count > 1:
             self.variance = self.delta_m2 / (self.count - 1)
             self.stdev = math.sqrt(self.variance)
+
+def generic_ordering[T: BaseModel](comparator: Callable[[T, T], bool], inst: T, other: T):
+    attr = inst.model_config.get('ordering_attribute')
+    if attr and type(inst) is type(other):
+        return comparator(getattr(inst, attr), getattr(other, attr))
+    return NotImplemented

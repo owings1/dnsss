@@ -24,25 +24,27 @@ class Params(bind.Params):
     k: PositiveInt = 4
     'Sample width for computing mean response time (last-k)'
 
-class Config(bind.Config):
-    params: Params = Field(default_factory=Params)
-
 class State(bind.State):
     SKM: Annotated[
         dict[Server, RunningMean],
-        PlainSerializer(lambda x: dvsorted(x))] = Field(default_factory=dict)
+        PlainSerializer(dvsorted)] = Field(default_factory=dict)
+    params: Params = Field(default_factory=Params, exclude=True)
 
-    def post_config_init(self, config: Config) -> None:
-        super().post_config_init(config)
-        self.SKM = {Si: RunningMean() for Si in config.servers}
+    def addserver(self, S: Server) -> None:
+        super().addserver(S)
+        self.SKM[S] = RunningMean()
+
+    def observe(self, S: Server, R: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
+        super().observe(S, R, code, servers)
+        self.SKM[S].observe(R)
+        self.SKM[S].count = max(self.SKM[S].count, self.params.k)
+
+    def rank(self, S: Server) -> float:
+        return max(super().rank(S), self.SKM[S].mean)
+
+class Config(bind.Config):
+    params: Params = Field(default_factory=Params)
 
 class Resolver(bind.Resolver):
-    config: Config
+    config: Config = Field(default_factory=Config)
     state: State = Field(default_factory=State)
-
-    def adjust(self, S: Server, R: NonNegativeFloat) -> None:
-        super().adjust(S, R)
-        KM = self.state.SKM[S]
-        KM.observe(R)
-        KM.count = max(KM.count, self.config.params.k)
-        self.state.SR[S] = max(self.state.SR[S], KM.mean)

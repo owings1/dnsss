@@ -10,11 +10,12 @@ Reference:
 """
 from __future__ import annotations
 
-from typing import Annotated, ClassVar
+from typing import Annotated, Any, ClassVar
 
 from ..models import *
+from ..utils import *
 from . import bind
-from ..utils import dsorted
+
 
 class Params(bind.Params):
     P_count_min: PositiveInt = 4
@@ -25,8 +26,8 @@ class Params(bind.Params):
     'Maximum value for AR volatility parameter (alpha)'
     stale_max: PositiveInt = 100
     'Maximum number of queries before a slow server is tried again'
-    drc_count_min: PositiveInt = 10
-    'Minimum number of queries to a server before deviation reset counter is checked'
+    drc_count_min: PositiveInt = 50
+    'Minimum sample size before deviation reset counter is checked'
     drc_consec: PositiveInt = 5
     'Number of consecutive queries to a server with high deviation from mean to trigger reset'
     drc_stdev_co: PositiveInt = 2
@@ -63,11 +64,44 @@ class ARStats(RunningVariance):
     """
     drc: NonNegativeInt = 0
     'Deviation reset counter'
-
+    params: Params = Field(default_factory=Params, exclude=True)
     model_config: ClassVar = ConfigDict(
+        ordering_attribute='P',
         terse_exclude=['idle', 'mean_v2', 'mean_xy', 'delta_m2', 'variance'])
 
     def observe(self, value: NonNegativeFloat) -> None:
+        params = self.params
+        if self.count:
+            # Deviation reset counter
+            """
+            > [I]f there is a significantly large deviation in the observed
+            > response times from the mean response times, then we restart
+            > the complete estimation. (p. 4)
+            """
+            if abs(value - self.mean) > self.stdev * params.drc_stdev_co:
+                self.drc += 1
+            else:
+                self.drc = 0
+            # We don't want to let just one or two deviant response
+            # times make us start all over again. We mainly want to
+            # avoid getting mired by old datasets and overgrown sample
+            # sizes that are no longer maleable. Stated in the text:
+            """
+            > This is important as the DNS server could be running
+            > for a long period of time over which the behavior of
+            > a server can change completely. For example, a server's
+            > response times at night-time can be very different
+            > from its response times during the day-time. (p. 4)
+            """
+            if (
+                # Thus we track the number of _consecutive_ queries
+                # resulting in deviant response times (drc), and require
+                # a threshold to be reached (drc_consec).
+                self.drc >= params.drc_consec and
+                # We also require a sample size large enough to consider
+                # our measured stdev stable (drc_count_min).
+                self.count >= params.drc_count_min):
+                    self.reset()
         super().observe(value)
         self.mean_v2 += (value**2 - self.mean_v2) / self.count
         if self.count > 1:
@@ -83,92 +117,76 @@ class ARStats(RunningVariance):
             # in progress.
             mean2 = self.mean**2
             self.alpha = (self.mean_xy - mean2) / (self.mean_v2 - mean2)
+            # Normalize alpha
+            """
+            > Note that [formula] (5) can lead to negative alpha if a server
+            > is not accessed consecutively even once. In order to prevent
+            > this, and in general, very small or very large alpha values,
+            > we always ensure that alpha is between 0.1 and 0.9. (p. 4)
+            """
+            self.alpha = max(params.alpha_min, min(params.alpha_max, self.alpha))
         self.latest = value
+        self.idle = 0
 
-class Config(bind.Config):
-    params: Params = Field(default_factory=Params)
+    def predict(self) -> None:
+        # Compute the AR prediction. Formula (4) from the text (p. 4):
+        """
+        prediction(X(q)) = alpha**k * X(q - k) + (1 - alpha**k) * E[X]
+        """
+        atok = self.alpha ** (self.idle + 1)
+        self.P = atok * self.latest + (1 - atok) * self.mean
+
+    def reset(self) -> None:
+        defaults = type(self)(params=self.params).model_dump()
+        for name, value in defaults.items():
+            setattr(self, name, value)
+        self.alpha = self.params.alpha_min
+
+    @property
+    def stale(self) -> bool:
+        return self.idle >= self.params.stale_max
 
 class State(bind.State):
     AR: Annotated[
         dict[Server, ARStats],
-        PlainSerializer(lambda x: dsorted(x, key=lambda x: x[1].P))] = Field(default_factory=dict)
+        PlainSerializer(dvsorted)] = Field(default_factory=dict)
+    params: Params = Field(default_factory=Params, exclude=True)
     model_config: ClassVar = ConfigDict(terse_exclude=['SR'])
 
-    def post_config_init(self, config: Config) -> None:
-        super().post_config_init(config)
-        self.AR = {Si: ARStats(P=Ri) for Si, Ri in self.SR.items()}
+    def addserver(self, S: Server) -> None:
+        super().addserver(S)
+        self.AR[S] = ARStats(params=self.params)
+        self.AR[S].reset()
 
-class Resolver(bind.Resolver):
-    config: Config
-    state: State = Field(default_factory=State)
-
-    def adjust(self, S: Server, R: NonNegativeFloat) -> None:
-        super().adjust(S, R)
-        params = self.config.params
-        for Si, ARi in self.state.AR.items():
+    def observe(self, S: Server, R: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
+        super().observe(S, R, code, servers)
+        for Si in servers:
+            ARi = self.AR[Si]
             if Si == S:
                 ARi.observe(R)
-                ARi.idle = 0
-                if ARi.count > 1:
-                    # Normalize alpha
-                    """
-                    Note that [formula] (5) can lead to negative alpha if a server
-                    is not accessed consecutively even once. In order to prevent
-                    this, and in general, very small or very large alpha values,
-                    we always ensure that alpha is between 0.1 and 0.9. (p. 4)
-                    """
-                    ARi.alpha = max(params.alpha_min, min(params.alpha_max, ARi.alpha))
-                    # Deviation reset counter
-                    """
-                    > [I]f there is a significantly large deviation in the observed
-                    > response times from the mean response times, then we restart
-                    > the complete estimation. (p. 4)
-                    """
-                    if abs(R - ARi.mean) > ARi.stdev * params.drc_stdev_co:
-                        ARi.drc += 1
-                    else:
-                        ARi.drc = 0
-                    # We don't want to let just one or two deviant response
-                    # times make us start all over again. We mainly want to
-                    # avoid getting mired by old datasets and overgrown sample
-                    # sizes that are no longer maleable. Stated in the text:
-                    """
-                    > This is important as the DNS server could be running
-                    > for a long period of time over which the behavior of
-                    > a server can change completely. For example, a server's
-                    > response times at night-time can be very different
-                    > from its response times during the day-time. (p. 4)
-                    """
-                    if (
-                        # Thus we track the number of _consecutive_ queries
-                        # resulting in deviant response times (drc), and require
-                        # a threshold to be reached (drc_consec).
-                        ARi.drc >= params.drc_consec and
-                        # We also require a sample size large enough to consider
-                        # our measured stdev stable (drc_count_min).
-                        ARi.count >= params.drc_count_min):
-                            self.state.AR[Si] = ARi = ARStats(P=params.o)
             else:
                 ARi.idle += 1
-            if ARi.count < params.P_count_min:
-                # Our sample size is too small to make an AR prediction, so we
-                # fall back to the BIND algorithm.
-                ARi.P = self.state.SR[Si]
-            else:
-                # Compute the AR prediction. Formula (4) from the text (p. 4):
-                """
-                prediction(X(q)) = alpha**k * X(q - k) + (1 - alpha**k) * E[X]
-                """
-                atok = ARi.alpha ** (ARi.idle + 1)
-                ARi.P = atok * ARi.latest + (1 - atok) * ARi.mean
-            self.state.SR[Si] = ARi.P
+            # Compute prediction
+            if ARi.count >= self.params.P_count_min:
+                ARi.predict()
 
-    def select(self, q: Question) -> Server:
-        stale = [
-            Si for Si, ARi in self.state.AR.items()
-            if ARi.idle >= self.config.params.stale_max]
-        if stale:
-            # If we have stale servers, choose the stalest.
-            return max(stale, key=lambda Si: self.state.AR[Si].idle)
-        # Otherwise, choose based on lowest predicted response time.
-        return super().select(q)
+    def rank(self, S: Server) -> float:
+        return (
+            # For stale servers, rank stalest first.
+            self.AR[S].stale and -float(self.AR[S].idle) or
+            # Rank based on AR prediction if available.
+            self.AR[S].P or
+            # Fall back to BIND algorithm.
+            super().rank(S))
+
+    def load(self, data: Any):
+        super().load(data)
+        for ARi in self.AR.values():
+            ARi.params = self.params
+
+class Config(bind.Config):
+    params: Params = Field(default_factory=Params)
+
+class Resolver(bind.Resolver):
+    config: Config = Field(default_factory=Config)
+    state: State = Field(default_factory=State)
