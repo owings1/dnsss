@@ -4,6 +4,7 @@ import enum
 import json
 import logging
 import random
+import re
 import sys
 import termios
 import time
@@ -20,7 +21,6 @@ import yaml
 
 from .algs import registry
 from .models import *
-from .utils import linefilter
 
 BASEDIR = Path(__file__).resolve().parent.parent
 DEFAULT_ALG = 'bind'
@@ -29,6 +29,8 @@ DEFAULT_QNAME = 'google.com'
 DEFAULT_TABLEFMT = 'simple'
 INTERVAL_MAX = 300.0
 INTERVAL_MIN = 0.001
+INTERVAL_STEP = 1.5
+INTERVAL_START = 1.0
 SELECT_TIMEOUT = 0.01
 logger = logging.getLogger('dnsss')
 
@@ -196,7 +198,7 @@ class MainCommand(BaseCommand[MainOptions]):
             except UserContinue:
                 pass
         else:
-            time.sleep(self.opts.interval or 1)
+            time.sleep(self.opts.interval or INTERVAL_START)
         q = random.choice(self.questions)
         try:
             rep = self.resolver.query(q)
@@ -353,19 +355,22 @@ class KeyAction:
     def cmd_faster(self) -> None:
         cmd = self.cmd
         if cmd.opts.interval:
-            cmd.opts.interval = max(INTERVAL_MIN, cmd.opts.interval / 1.5)
+            cmd.opts.interval = max(
+                INTERVAL_MIN,
+                cmd.opts.interval / INTERVAL_STEP)
         else:
-            cmd.opts.interval = 1.0
+            cmd.opts.interval = INTERVAL_START
         cmd.report(interval=cmd.opts.interval)
 
     def cmd_slower(self) -> None:
         cmd = self.cmd
-        cmd.opts.interval = min(INTERVAL_MAX, cmd.opts.interval * 1.5)
+        cmd.opts.interval = min(
+            INTERVAL_MAX,
+            cmd.opts.interval * INTERVAL_STEP)
         cmd.report(interval=cmd.opts.interval)
 
     def cmd_help(self) -> None:
-        cmd = self.cmd
-        cmd.report(help={
+        self.cmd.report(help={
             key.replace('\n', '[enter]'): value
             for key, value in self.keymap.items()})
 
@@ -381,10 +386,11 @@ class KeyAction:
 
 def resolve_questions(entries: Iterable[Any], cwd: Path) -> Iterator[Question]:
     qkeys = ('qname', 'rdtype')
+    pat = re.compile(r'^([^#].*[^\s])')
     for qraw in entries:
         if isinstance(qraw, str) and qraw.startswith('@'):
             with cwd.joinpath(qraw[1:]).open() as file:
-                it = filter(linefilter, file.readlines())
+                it = filter(pat.match, file.readlines())
                 it = map(str.rstrip, it)
         else:
             it = [qraw]

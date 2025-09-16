@@ -11,11 +11,11 @@ __all__ = [
     'dkpathed',
     'dsorted',
     'dvsorted',
-    'linefilter',
     'tablestr']
 
 K = TypeVar('K')
 T = TypeVar('T')
+YAML_FLOAT_PRECISION = 6
 
 def bykey(item: tuple[T, Any]) -> T:
     "Item key sort"
@@ -25,16 +25,16 @@ def byvalue(item: tuple[Any, T]) -> T:
     "Item value sort"
     return item[1]
 
-def dkpathed(mapping: Mapping[str, Any], path: list[str]|None = None, sep: str = '.') -> dict[str, Any]:
+def dkpathed(mapping: Mapping[str, Any], *, separator: str = '.', path: list[str]|None = None) -> dict[str, Any]:
     "Flatten a mapping by recursively joining keys with separator"
     path = path or []
     pathed = {}
     for key, value in mapping.items():
-        kpath = path + [str(key)]
+        kpath = path + [key]
         if isinstance(value, Mapping):
-            pathed.update(dkpathed(value, kpath))
+            pathed.update(dkpathed(value, separator=separator, path=kpath))
         else:
-            pathed[sep.join(kpath)] = value
+            pathed[separator.join(kpath)] = value
     return pathed
 
 def dsorted(mapping: Mapping[K, T], key: Callable[[tuple[K, T]], Any] = bykey, reverse: bool = False) -> dict[K, T]:
@@ -45,12 +45,9 @@ def dvsorted(mapping: Mapping[K, T], reverse: bool = False) -> dict[K, T]:
     "Return a sorted mapping by value"
     return dsorted(mapping, key=byvalue, reverse=reverse)
 
-def linefilter(line: str) -> bool:
-    "Simple line filter for reading DNS Question files"
-    return bool(line.strip()) and not line.startswith('#')
-
 def tablestr(*args, **kw) -> LiteralStr:
     "Block literal table string for YAML"
+    kw.setdefault('floatfmt', f'.{YAML_FLOAT_PRECISION}f')
     return LiteralStr(tabulate.tabulate(*args, **kw))
 
 class LiteralStr(str):
@@ -62,3 +59,7 @@ class LiteralStr(str):
         return dumper.represent_scalar('tag:yaml.org,2002:str', data, style='|')
 
 yaml.add_representer(LiteralStr, LiteralStr.representer)
+yaml.add_representer(
+    float,
+    lambda dumper, data: (
+        dumper.represent_float(float(f'{data:.{YAML_FLOAT_PRECISION}f}'))))
