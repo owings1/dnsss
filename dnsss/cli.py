@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 import json
 import logging
 import random
@@ -12,7 +13,7 @@ from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 from select import select
-from typing import (Annotated, Any, ClassVar, Iterable, Iterator, Literal,
+from typing import (Annotated, Any, ClassVar, Generator, Iterable, Iterator,
                     Sequence)
 
 import yaml
@@ -32,7 +33,7 @@ SELECT_TIMEOUT = 0.01
 logger = logging.getLogger('dnsss')
 
 class CommandOptions(BaseModel):
-    model_config: ClassVar = dict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True)
 
 class BaseCommand[O: CommandOptions]:
     prog: ClassVar[str|None] = None
@@ -72,6 +73,11 @@ class UserQuit(Exception):
 class UserContinue(Exception):
     pass
 
+class OutFormat(enum.StrEnum):
+    json = 'json'
+    yaml = 'yaml'
+    table = 'table'
+
 class MainOptions(CommandOptions):
     alg: Annotated[str, BeforeValidator(valalg)] = DEFAULT_ALG
     config: Path|None = None
@@ -80,7 +86,7 @@ class MainOptions(CommandOptions):
     output: Path|None = None
     load: Path|None = None
     save: bool = False
-    format: Literal['json', 'yaml', 'table'] = DEFAULT_FORMAT
+    format: OutFormat = DEFAULT_FORMAT
     tablefmt: str = DEFAULT_TABLEFMT
 
 class MainCommand(BaseCommand[MainOptions]):
@@ -131,8 +137,7 @@ class MainCommand(BaseCommand[MainOptions]):
         arg(
             '--format', '-F',
             default=defaults.format,
-            type=str.lower,
-            choices=['json', 'yaml', 'table'],
+            choices=OutFormat,
             help=f'Output format, default {defaults.format}')
 
     def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
@@ -262,7 +267,7 @@ class MainCommand(BaseCommand[MainOptions]):
         stdout.flush()
 
     @contextmanager
-    def ttycontext(self, when: int = termios.TCSADRAIN):
+    def ttycontext(self, when: int = termios.TCSADRAIN) -> Generator[None]:
         if not self.stdin.isatty():
             yield
             return

@@ -80,6 +80,7 @@ class State(RunningMean):
     def load(self, data: Any) -> None:
         'Load saved state data'
         servers = list(self.SM)
+        # Clean merge the data
         data = self.model_dump() | self.model_validate(data).model_dump()
         other = self.model_validate(data)
         for name in data:
@@ -140,8 +141,8 @@ class Resolver(BaseModel):
         """
         q = Question.model_validate(q)
         servers = self.select(q)
-        failed = []
-        rep = None
+        failed: list[Server] = []
+        rep: Response|None = None
         while not rep:
             servers = self.state.ranked(servers)
             if not servers:
