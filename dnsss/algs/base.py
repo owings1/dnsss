@@ -195,6 +195,7 @@ def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
     "Make a backend resolve function for a server/port using dnspython"
     backend = dns.resolver.make_resolver_at(where, int(port))
     def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
+        rset = []
         try:
             rep = backend.resolve(
                 **q.model_dump(),
@@ -203,18 +204,13 @@ def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
                 tcp=tcp)
         except dns.resolver.NXDOMAIN:
             code = 'NXDOMAIN'
-            rset = []
         except dns.resolver.LifetimeTimeout:
             code = 'TIMEOUT'
-            rset = []
         else:
             code = rep.response.rcode().name
-            rset = [(
-                f'{rep.rrset.name} '
-                f'{rep.rrset.ttl} '
-                f'{rep.rdclass.name} '
-                f'{x.rdtype.name} '
-                f'{x}') for x in rep]
+            rset.extend(map(str, rep.chaining_result.cnames))
+            if rep.rrset:
+                rset.append(str(rep.rrset))
         return code, rset, 0.0
     return resolve
 

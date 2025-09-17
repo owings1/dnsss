@@ -11,7 +11,7 @@ from collections import deque
 from threading import Thread
 from typing import Callable, ClassVar, Self
 
-from dnslib import (CLASS, QTYPE, RCODE, RDMAP, RR, DNSHeader, DNSLabel,
+from dnslib import (CLASS, QTYPE, RCODE, RDMAP, RR, DNSHeader, DNSLabel, HTTPS,
                     DNSRecord)
 
 from .algs.base import Resolver
@@ -23,7 +23,6 @@ TCP_BUF_SIZE = 8192 * 1
 logger = logging.getLogger(__name__)
 
 class BaseHandler(socketserver.BaseRequestHandler):
-    proto: str
     resolver: Resolver
     onquery: Callable[[Self, Response], None]
 
@@ -57,7 +56,7 @@ class BaseHandler(socketserver.BaseRequestHandler):
     def buildrr(rstr: str) -> RR:
         rname, ttl, rclass, rtype, rdata = rstr.split(maxsplit=4)
         if rtype == 'HTTPS':
-            rdata = RDMAP[rtype].fromZone(rdata.split())
+            rdata = HTTPS.fromZone(rdata.split())
         else:
             rdata = RDMAP[rtype](rdata)
         return RR(
@@ -76,7 +75,6 @@ class BaseHandler(socketserver.BaseRequestHandler):
         raise NotImplementedError
 
 class UDPHandler(BaseHandler):
-    proto = 'UDP'
     request: tuple[bytes, socket.socket]
 
     def read(self) -> bytes:
@@ -103,16 +101,13 @@ class TCPHandler(BaseHandler):
     Apache 2.0 License
     http://www.apache.org/licenses/LICENSE-2.0
     """
-    proto = 'TCP'
     request: socket.socket
 
     def read(self) -> bytes:
         data = self.request.recv(TCP_BUF_SIZE).strip()
-        sz = struct.unpack('>H', data[:2])[0]
-        if sz < len(data) - 2:
-            raise ValueError('Wrong size of TCP packet')
-        elif sz > len(data) - 2:
-            raise ValueError(f'Too big TCP packet {sz=} {len(data)}')
+        sz: int = struct.unpack('>H', data[:2])[0]
+        if sz != len(data) - 2:
+            raise ValueError(f'Wrong size of TCP packet {sz=} ln={len(data)}')
         return data[2:]
 
     def send(self, data: bytes) -> None:
@@ -122,7 +117,7 @@ class TCPHandler(BaseHandler):
 class ServerMixin: 
     BaseHandler: type[BaseHandler]
 
-    def __init__(self, opts: ServeOptions, ns: dict, **kw):
+    def __init__(self, opts: ServeOptions, ns: dict, **kw) -> None:
         self.address_family = opts.address_family
         Handler = type(self.BaseHandler.__name__, (self.BaseHandler,), ns)
         super().__init__((str(opts.address), opts.port), Handler, **kw)
