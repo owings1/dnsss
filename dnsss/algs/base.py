@@ -208,9 +208,11 @@ def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
             code = 'TIMEOUT'
         else:
             code = rep.response.rcode().name
+            # for cname in rep.chaining_result.cnames:
+            #     rset.extend(str(cname).splitlines())
             rset.extend(map(str, rep.chaining_result.cnames))
             if rep.rrset:
-                rset.append(str(rep.rrset))
+                rset.extend(str(rep.rrset).splitlines())
         return code, rset, 0.0
     return resolve
 

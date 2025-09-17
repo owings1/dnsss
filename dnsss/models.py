@@ -29,6 +29,7 @@ __all__ = [
     'field_serializer',
     'MockServer',
     'model_serializer',
+    'model_validator',
     'NonNegativeFloat',
     'NonNegativeInt',
     'PlainSerializer',

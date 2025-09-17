@@ -16,23 +16,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from select import select
 from typing import (Annotated, Any, ClassVar, Generator, Iterable, Iterator,
-                    Sequence)
+                    Self, Sequence)
 
 import yaml
 
-from .algs import registry
+from . import settings
+from .algs import ResolverType, registry
 from .models import *
 
-BASEDIR = Path(__file__).resolve().parent.parent
-DEFAULT_ALG = 'bind'
-DEFAULT_FORMAT = 'table'
-DEFAULT_QNAME = 'google.com'
-DEFAULT_TABLEFMT = 'simple'
-INTERVAL_MAX = 300.0
-INTERVAL_MIN = 0.001
-INTERVAL_STEP = 1.5
-INTERVAL_START = 1.0
-SELECT_TIMEOUT = 0.01
 logger = logging.getLogger('dnsss')
 
 class CommandOptions(BaseModel):
@@ -57,14 +48,20 @@ class BaseCommand[O: CommandOptions]:
     def main(cls, args: Sequence[str]|None = None) -> None:
         parser = cls.create_parser()
         cmd = cls(parser, parser.parse_args(args))
+        cmd.setup()
         signal.signal(signal.SIGHUP, cmd.SIGHUP)
         cmd.run()
 
-    def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
+    def __init__(self, parser: ArgumentParser, nsopts: Namespace) -> None:
+        self.stdout = sys.stdout
+        self.stdin = sys.stdin
         self.parser = parser
-        self.opts = self.options_model.model_validate(opts)
+        self.opts = self.options_model.model_validate(nsopts)
+
+    def setup(self) -> None: ...
 
     def run(self) -> None: ...
+
     def SIGHUP(self, signum, frame) -> None: ...
 
 def valalg(alg: str) -> str:
@@ -85,14 +82,31 @@ class OutFormat(enum.StrEnum):
     table = 'table'
 
 class CommonOptions(CommandOptions):
-    alg: Annotated[str, BeforeValidator(valalg)] = DEFAULT_ALG
+    algorithm: Annotated[str, BeforeValidator(valalg)] = Field(
+        default=settings.DEFAULT_ALG)
     config: Path|None = None
     output: Path|None = None
-    load: Path|None = None
+    load: Path|None|bool = Field(
+        default=False,
+        description='Load state from file')
     save: bool = False
-    format: OutFormat = DEFAULT_FORMAT
-    tablefmt: str = DEFAULT_TABLEFMT
+    format: OutFormat = OutFormat[settings.DEFAULT_FORMAT]
+    tablefmt: str = settings.DEFAULT_TABLEFMT
     quiet: bool = False
+
+    @model_validator(mode='after')
+    def induce_default(self) -> Self:
+        if self.output is None:
+            self.output = Path(f'state.{self.algorithm}.yml')
+        if self.load is False:
+            self.load = None
+        elif self.load is None or self.load is True:
+            self.load = self.output
+        return self
+
+    @property
+    def table(self) -> bool|str:
+        return self.format is self.format.table and self.tablefmt
 
 class DevOptions(CommonOptions):
     interval: NonNegativeFloat = 0.0
@@ -105,20 +119,18 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
     def add_arguments(cls, parser: ArgumentParser) -> None:
         super().add_arguments(parser)
         arg = parser.add_argument
-        defaults = cls.options_model()
         arg(
             '--alg', '-a',
-            default=defaults.alg,
-            type=valalg,
+            type=str.lower,
+            dest='algorithm',
             choices=list(registry),
             help='Resolver algorithm')
         arg(
             '--config', '-f',
-            default=defaults.config,
+            type=Path,
             help='Path to YAML config file')
         arg(
             '--output', '-o',
-            default=...,
             help='File to write state on save')
         arg(
             '--save', '-s',
@@ -127,50 +139,65 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
         arg(
             '--load', '-l',
             nargs='?',
-            default=...,
+            default=False,
             help='Load state from file')
         arg(
             '--format', '-F',
-            default=defaults.format,
             choices=OutFormat,
-            help=f'Output format, default {defaults.format}')
+            help=f'Output format, default {settings.DEFAULT_FORMAT}')
         arg('--quiet', '-q', action='store_true')
 
-    def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
-        alg = valalg(opts.alg)
-        if opts.output is ...:
-            opts.output = f'state.{alg}.yml'
-        if opts.load is ...:
-            opts.load = None
-        elif opts.load is None:
-            opts.load = opts.output
-        super().__init__(parser, opts)
-        self.stdout = sys.stdout
-        self.setup()
-
-    def setup(self) -> None:
-        if self.opts.config:
-            with self.opts.config.open() as file:
-                self.config = yaml.safe_load(file)
+    def __init__(self, parser: ArgumentParser, nsopts: Namespace) -> None:
+        if nsopts.config:
+            # Preload the config file before we construct the command options,
+            # so we can specify default command options in the config file.
+            with open(nsopts.config) as file:
+                self.config: dict = yaml.safe_load(file) or {}
+            self.configcwd = nsopts.config.parent
         else:
             self.config = {}
-        self.resolver = registry[self.opts.alg](config=self.config)
+            self.configcwd = Path('.')
+        defaults = self.options_model.model_validate(self.config)
+        for name in defaults.model_dump(exclude_none=True):
+            if getattr(nsopts, name, ...) in (None, False):
+                value = getattr(defaults, name)
+                if isinstance(value, Path) and nsopts.config:
+                    # Relativize paths to config file if they were not
+                    # specified on the command line
+                    value = self.configcwd/value
+                setattr(nsopts, name, value)
+        super().__init__(parser, nsopts)
+
+    def setup(self) -> None:
+        super().setup()
+        self.resolver = registry[self.opts.algorithm](config=self.config)
+        if self.opts.output and self.opts.save and not self.opts.output.exists():
+            # Initialize output file if save option is enabled, so if it is
+            # the same as the --load file, we won't throw an error. Otherwise
+            # you would have to call the program first without the --load argument,
+            # then save the file, then change the command args the next time,
+            # which is awkward.
+            with self.opts.output.open('w') as file:
+                yaml.safe_dump({}, file)
         if self.opts.load:
             with self.opts.load.open() as file:
-                self.resolver.state.load(yaml.safe_load(file))
+                state = yaml.safe_load(file) or {}
+            self.resolver.state.load(state)
 
     def reload(self) -> None:
         if not self.opts.config:
             return
         with self.opts.config.open() as file:
-            config = yaml.safe_load(file)
-        resolver = type(self.resolver)(config=config)
+            config: dict = yaml.safe_load(file) or {}
+        resolver: ResolverType = type(self.resolver)(config=config)
         resolver.state.load(self.resolver.state)
         self.config, self.resolver = config, resolver
 
     def save(self) -> None:
+        "Save the resolver state to the file"
+        data = self.resolver.state.model_dump()
         with self.opts.output.open('w') as file:
-            yaml.safe_dump(self.resolver.state.model_dump(), file, sort_keys=False)
+            yaml.safe_dump(data, file, sort_keys=False)
 
     def report(self, *args, **kw) -> None:
         if self.opts.quiet:
@@ -191,6 +218,7 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
         stdout.flush()
 
     def SIGHUP(self, signum, frame) -> None:
+        'SIGHUP handler'
         logger.warning(f'Received signal {signum} SIGHUP')
         logger.info(f'Reloading')
         try:
@@ -213,31 +241,21 @@ class DevCommand(CommonCommand[DevOptions]):
     def add_arguments(cls, parser: ArgumentParser) -> None:
         super().add_arguments(parser)
         arg = parser.add_argument
-        defaults = cls.options_model()
-        arg(
-            '--interval', '-n',
-            default=defaults.interval,
-            help='Poll interval')
-        arg(
-            '--count', '-c',
-            default=defaults.count,
-            help='Number of queries after which to quit')
+        arg('--interval', '-n', help='Poll interval')
+        arg('--count', '-c', help='Number of queries after which to quit')
 
     def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
         self.paused = False
         self.count = 0
         self.anomaly: Anomaly|None = None
         self.keyaction = KeyAction(self)
-        self.stdin = sys.stdin
         super().__init__(parser, opts)
 
     def setup(self) -> None:
         super().setup()
-        self.tcorgattr = self.stdin.isatty() and termios.tcgetattr(self.stdin.fileno())
-        if self.opts.config:
-            self.configcwd = self.opts.config.parent
-        else:
-            self.configcwd = Path('.')
+        self.tcorgattr = (
+            self.stdin.isatty() and
+            termios.tcgetattr(self.stdin.fileno()))
         self.questions, self.anomalies = self.configextra()
 
     def reload(self) -> None:
@@ -250,8 +268,7 @@ class DevCommand(CommonCommand[DevOptions]):
             raise
 
     def configextra(self) -> tuple[list[Question], list[Anomaly]]:
-        qentries = (
-            self.config.get('questions') or [DEFAULT_QNAME])
+        qentries = self.config.get('questions') or [settings.DEFAULT_QNAME]
         questions = list(resolve_questions(qentries, self.configcwd))
         anomalies = deque(
             map(Anomaly.model_validate, self.config.get('anomalies', [])))
@@ -259,8 +276,8 @@ class DevCommand(CommonCommand[DevOptions]):
 
     def run(self) -> None:
         with self.ttycontext():
-            table = self.opts.format == 'table' and self.opts.tablefmt
-            self.report(state=self.resolver.state.report(table=table))
+            state = self.resolver.state.report(table=self.opts.table)
+            self.report(state=state)
             if self.stdin.isatty():
                 tty.setcbreak(self.stdin.fileno())
             try:
@@ -277,7 +294,7 @@ class DevCommand(CommonCommand[DevOptions]):
             except UserContinue:
                 pass
         else:
-            time.sleep(self.opts.interval or INTERVAL_START)
+            time.sleep(self.opts.interval or settings.INTERVAL_START)
         q = random.choice(self.questions)
         try:
             rep = self.resolver.query(q)
@@ -291,8 +308,7 @@ class DevCommand(CommonCommand[DevOptions]):
                 if self.anomaly.limit is not None:
                     self.anomaly.limit -= 1
                 report.update(anomaly=self.anomaly.model_dump())
-            table = self.opts.format == 'table' and self.opts.tablefmt
-            state = self.resolver.state.report(table=table)
+            state = self.resolver.state.report(table=self.opts.table)
             report.update(state=state)
             self.report(report)
         finally:
@@ -318,7 +334,7 @@ class DevCommand(CommonCommand[DevOptions]):
 
     def readtty(self) -> None:
         start = time.monotonic()
-        sargs = ([self.stdin.fileno()], [], [], SELECT_TIMEOUT)
+        sargs = ([self.stdin.fileno()], [], [], settings.SELECT_TIMEOUT)
         while True:
             if select(*sargs)[0]:
                 key = self.stdin.read(1).upper()
@@ -384,7 +400,9 @@ class KeyAction:
             cmd.report(error=str(err))
         else:
             if interval:
-                interval = min(INTERVAL_MAX, max(INTERVAL_MIN, interval))
+                interval = min(
+                    settings.INTERVAL_MAX,
+                    max(settings.INTERVAL_MIN, interval))
             cmd.opts.interval = interval
             cmd.report(interval=interval)
 
@@ -415,17 +433,17 @@ class KeyAction:
         cmd = self.cmd
         if cmd.opts.interval:
             cmd.opts.interval = max(
-                INTERVAL_MIN,
-                cmd.opts.interval / INTERVAL_STEP)
+                settings.INTERVAL_MIN,
+                cmd.opts.interval / settings.INTERVAL_STEP)
         else:
-            cmd.opts.interval = INTERVAL_START
+            cmd.opts.interval = settings.INTERVAL_START
         cmd.report(interval=cmd.opts.interval)
 
     def cmd_slower(self) -> None:
         cmd = self.cmd
         cmd.opts.interval = min(
-            INTERVAL_MAX,
-            cmd.opts.interval * INTERVAL_STEP)
+            settings.INTERVAL_MAX,
+            cmd.opts.interval * settings.INTERVAL_STEP)
         cmd.report(interval=cmd.opts.interval)
 
     def cmd_help(self) -> None:

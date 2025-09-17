@@ -1,5 +1,6 @@
 !*.example.dns
 !*.example.yml
+!*/**/*.yml
 *.dns
 *.questions.*
 *.yml

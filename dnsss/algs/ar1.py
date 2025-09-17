@@ -170,10 +170,10 @@ class State(bind.State):
                 # Update the ARStats of the queried server
                 ARi.observe(R)
             else:
-                # Increment the idle count for all the other server
+                # Increment the idle count for all the other servers
                 ARi.idle += 1
             if ARi.count >= self.params.p_count_min:
-                # Compute the AR prediction
+                # Compute the AR prediction for every server
                 ARi.predict()
 
     def rank(self, S: Server) -> float:

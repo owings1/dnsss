@@ -11,19 +11,18 @@ from collections import deque
 from threading import Thread
 from typing import Callable, ClassVar, Self
 
-from dnslib import (CLASS, QTYPE, RCODE, RDMAP, RR, DNSHeader, DNSLabel, HTTPS,
+from dnslib import (CLASS, HTTPS, QTYPE, RCODE, RDMAP, RR, DNSHeader, DNSLabel,
                     DNSRecord)
 
-from .algs.base import Resolver
+from . import settings
+from .algs import ResolverType
 from .cli import CommonCommand, CommonOptions
 from .models import *
 
-SLEEP_DELAY = 0.1
-TCP_BUF_SIZE = 8192 * 1
 logger = logging.getLogger(__name__)
 
 class BaseHandler(socketserver.BaseRequestHandler):
-    resolver: Resolver
+    resolver: ResolverType
     onquery: Callable[[Self, Response], None]
 
     def handle(self) -> None:
@@ -104,15 +103,14 @@ class TCPHandler(BaseHandler):
     request: socket.socket
 
     def read(self) -> bytes:
-        data = self.request.recv(TCP_BUF_SIZE).strip()
+        data = self.request.recv(settings.TCP_BUF_SIZE).strip()
         sz: int = struct.unpack('>H', data[:2])[0]
         if sz != len(data) - 2:
-            raise ValueError(f'Wrong size of TCP packet {sz=} ln={len(data)}')
+            raise ValueError(f'Wrong size TCP packet {sz=} ln={len(data)}')
         return data[2:]
 
     def send(self, data: bytes) -> None:
-        sz = struct.pack('>H', len(data))
-        self.request.sendall(sz + data)
+        self.request.sendall(struct.pack('>H', len(data)) + data)
 
 class ServerMixin: 
     BaseHandler: type[BaseHandler]
@@ -144,14 +142,17 @@ class ServeCommand(CommonCommand[ServeOptions]):
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:
         super().add_arguments(parser)
-        defaults = cls.options_model()
-        parser.add_argument('--port', '-p', default=defaults.port)
-        parser.add_argument('--address', '-b', default=defaults.address)
+        parser.add_argument('--port', '-p')
+        parser.add_argument('--address', '-b')
 
     def setup(self) -> None:
         super().setup()
         self.reports = deque()
-        ns = dict(resolver=self.resolver, onquery=self.onquery)
+        # Make resolver a property for the Handler class, since the reference
+        # changes on reload() when a new instance is created
+        def resolver(_):
+            return self.resolver
+        ns = dict(resolver=property(resolver), onquery=self.onquery)
         self.servers = (UDPServer(self.opts, ns), TCPServer(self.opts, ns))
 
     def run(self) -> None:
@@ -166,7 +167,8 @@ class ServeCommand(CommonCommand[ServeOptions]):
             logger.info(f'Starting {thread.name} listening on {listenaddr}')
             thread.start()
         try:
-            self.loop()
+            while True:
+                self.loop()
         except KeyboardInterrupt:
             pass
         finally:
@@ -175,18 +177,13 @@ class ServeCommand(CommonCommand[ServeOptions]):
                 server.shutdown()
 
     def loop(self) -> None:
-        report = None
-        while True:
-            try:
-                report = self.reports.popleft()
-            except IndexError:
-                if report:
-                    if self.opts.save:
-                        self.save()
-                        report = None
-                time.sleep(SLEEP_DELAY)
-            else:
-                self.report(report)
+        if self.reports:
+            # Only print the latest
+            self.report(self.reports.pop())
+            self.reports.clear()
+            if self.opts.save:
+                self.save()
+        time.sleep(settings.SERVER_SLEEP_DELAY)
 
     def onquery(self, handler: BaseHandler, rep: Response) -> None:
         table = self.opts.format == 'table' and self.opts.tablefmt
@@ -197,5 +194,4 @@ class ServeCommand(CommonCommand[ServeOptions]):
 
 if __name__ == '__main__':
     logger = logging.getLogger(f'{__package__}.server')
-    logging.basicConfig(level=logging.INFO)
     ServeCommand.main()
