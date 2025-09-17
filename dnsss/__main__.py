@@ -1,3 +1,5 @@
 if __name__ == '__main__':
-    from .cli import MainCommand
-    MainCommand.main()
+    import logging
+    logging.basicConfig(level=logging.INFO)
+    from .cli import DevCommand
+    DevCommand.main()

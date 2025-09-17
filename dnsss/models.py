@@ -9,15 +9,17 @@ from typing import Annotated, Any, Callable, Literal, Self
 
 import pydantic
 from pydantic import (AfterValidator, BeforeValidator, ConfigDict, Field,
-                      NegativeInt, NonNegativeFloat, NonNegativeInt,
-                      PlainSerializer, PositiveFloat, PositiveInt,
-                      SerializationInfo, SerializerFunctionWrapHandler,
-                      TypeAdapter, ValidationError, field_serializer,
-                      model_serializer, model_validator)
+                      IPvAnyAddress, NegativeInt, NonNegativeFloat,
+                      NonNegativeInt, PlainSerializer, PositiveFloat,
+                      PositiveInt, SerializationInfo,
+                      SerializerFunctionWrapHandler, TypeAdapter,
+                      ValidationError, field_serializer, model_serializer,
+                      model_validator)
 
 __all__ = [
     'AfterValidator',
     'Anomaly',
+    'IPvAnyAddress',
     'BaseModel',
     'BeforeValidator',
     'ConfigDict',
@@ -49,7 +51,7 @@ type Server = str
 type Rcode = str
 type Rset = list[str]
 type RdType = Annotated[
-    Literal['A', 'AAAA', 'CNAME', 'PTR', 'NS', 'TXT', 'MX', 'SOA', 'SRV'],
+    Literal['A', 'AAAA', 'CNAME', 'HTTPS', 'PTR', 'NS', 'TXT', 'MX', 'SOA', 'SRV', 'SVCB'],
     BeforeValidator(str.upper)]
 type Domain = Annotated[
     str,

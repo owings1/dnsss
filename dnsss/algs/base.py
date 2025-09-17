@@ -203,13 +203,19 @@ def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
                 tcp=tcp)
         except dns.resolver.NXDOMAIN:
             code = 'NXDOMAIN'
-            rep = []
+            rset = []
         except dns.resolver.LifetimeTimeout:
             code = 'TIMEOUT'
-            rep = []
+            rset = []
         else:
             code = rep.response.rcode().name
-        return code, [*map(str, rep)], 0.0
+            rset = [(
+                f'{rep.rrset.name} '
+                f'{rep.rrset.ttl} '
+                f'{rep.rdclass.name} '
+                f'{x.rdtype.name} '
+                f'{x}') for x in rep]
+        return code, rset, 0.0
     return resolve
 
 def _mock_backend(**opts) -> ResolveFunc:
@@ -224,6 +230,5 @@ def _mock_backend(**opts) -> ResolveFunc:
             R = lifetime
         else:
             code = 'NOERROR'
-            rset += ['mock']
         return code, rset, valnnf(R)
     return resolve

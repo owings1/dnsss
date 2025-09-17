@@ -5,6 +5,7 @@ import json
 import logging
 import random
 import re
+import signal
 import sys
 import termios
 import time
@@ -55,13 +56,16 @@ class BaseCommand[O: CommandOptions]:
     @classmethod
     def main(cls, args: Sequence[str]|None = None) -> None:
         parser = cls.create_parser()
-        cls(parser, parser.parse_args(args)).run()
+        cmd = cls(parser, parser.parse_args(args))
+        signal.signal(signal.SIGHUP, cmd.SIGHUP)
+        cmd.run()
 
     def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
         self.parser = parser
         self.opts = self.options_model.model_validate(opts)
 
     def run(self) -> None: ...
+    def SIGHUP(self, signum, frame) -> None: ...
 
 def valalg(alg: str) -> str:
     alg = alg.lower()
@@ -80,25 +84,22 @@ class OutFormat(enum.StrEnum):
     yaml = 'yaml'
     table = 'table'
 
-class MainOptions(CommandOptions):
+class CommonOptions(CommandOptions):
     alg: Annotated[str, BeforeValidator(valalg)] = DEFAULT_ALG
     config: Path|None = None
-    interval: NonNegativeFloat = 0.0
-    count: NonNegativeInt = 0
     output: Path|None = None
     load: Path|None = None
     save: bool = False
     format: OutFormat = DEFAULT_FORMAT
     tablefmt: str = DEFAULT_TABLEFMT
+    quiet: bool = False
 
-class MainCommand(BaseCommand[MainOptions]):
-    prog: ClassVar = 'dnsss'
-    options_model: ClassVar = MainOptions
-    termerrors: ClassVar[tuple[type[Exception], ...]] = (
-        EOFError,
-        KeyboardInterrupt,
-        BrokenPipeError,
-        UserQuit)
+class DevOptions(CommonOptions):
+    interval: NonNegativeFloat = 0.0
+    count: NonNegativeInt = 0
+
+class CommonCommand[O: CommonOptions](BaseCommand[O]):
+    options_model: ClassVar = CommonOptions
 
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:
@@ -115,14 +116,6 @@ class MainCommand(BaseCommand[MainOptions]):
             '--config', '-f',
             default=defaults.config,
             help='Path to YAML config file')
-        arg(
-            '--interval', '-n',
-            default=defaults.interval,
-            help='Poll interval')
-        arg(
-            '--count', '-c',
-            default=defaults.count,
-            help='Number of queries after which to quit')
         arg(
             '--output', '-o',
             default=...,
@@ -141,6 +134,7 @@ class MainCommand(BaseCommand[MainOptions]):
             default=defaults.format,
             choices=OutFormat,
             help=f'Output format, default {defaults.format}')
+        arg('--quiet', '-q', action='store_true')
 
     def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
         alg = valalg(opts.alg)
@@ -151,15 +145,119 @@ class MainCommand(BaseCommand[MainOptions]):
         elif opts.load is None:
             opts.load = opts.output
         super().__init__(parser, opts)
-        self.keyaction = KeyAction(self)
-        self.stdin = sys.stdin
         self.stdout = sys.stdout
+        self.setup()
+
+    def setup(self) -> None:
+        if self.opts.config:
+            with self.opts.config.open() as file:
+                self.config = yaml.safe_load(file)
+        else:
+            self.config = {}
+        self.resolver = registry[self.opts.alg](config=self.config)
+        if self.opts.load:
+            with self.opts.load.open() as file:
+                self.resolver.state.load(yaml.safe_load(file))
+
+    def reload(self) -> None:
+        if not self.opts.config:
+            return
+        with self.opts.config.open() as file:
+            config = yaml.safe_load(file)
+        resolver = type(self.resolver)(config=config)
+        resolver.state.load(self.resolver.state)
+        self.config, self.resolver = config, resolver
+
+    def save(self) -> None:
+        with self.opts.output.open('w') as file:
+            yaml.safe_dump(self.resolver.state.model_dump(), file, sort_keys=False)
+
+    def report(self, *args, **kw) -> None:
+        if self.opts.quiet:
+            return
+        info = dict(*args, **kw)
+        stdout = self.stdout
+        if self.opts.format == 'json':
+            json.dump(info, stdout, indent=2)
+            stdout.write('\n')
+        elif self.opts.format in ('yaml', 'table'):
+            yaml.dump(info, stdout, sort_keys=False, width=float('inf'))
+            stdout.write('\n---\n')
+            if not stdout.isatty():
+                # Piping to yq needs this
+                stdout.write('---\n---\n')
+        else:
+            raise NotImplementedError
+        stdout.flush()
+
+    def SIGHUP(self, signum, frame) -> None:
+        logger.warning(f'Received signal {signum} SIGHUP')
+        logger.info(f'Reloading')
+        try:
+            self.reload()
+        except:
+            logger.exception(f'Reload failed')
+        else:
+            logger.info(f'Reload succeded')
+
+class DevCommand(CommonCommand[DevOptions]):
+    prog: ClassVar = 'dnsss'
+    options_model: ClassVar = DevOptions
+    termerrors: ClassVar[tuple[type[Exception], ...]] = (
+        EOFError,
+        KeyboardInterrupt,
+        BrokenPipeError,
+        UserQuit)
+
+    @classmethod
+    def add_arguments(cls, parser: ArgumentParser) -> None:
+        super().add_arguments(parser)
+        arg = parser.add_argument
+        defaults = cls.options_model()
+        arg(
+            '--interval', '-n',
+            default=defaults.interval,
+            help='Poll interval')
+        arg(
+            '--count', '-c',
+            default=defaults.count,
+            help='Number of queries after which to quit')
+
+    def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
         self.paused = False
         self.count = 0
         self.anomaly: Anomaly|None = None
+        self.keyaction = KeyAction(self)
+        self.stdin = sys.stdin
+        super().__init__(parser, opts)
+
+    def setup(self) -> None:
+        super().setup()
+        self.tcorgattr = self.stdin.isatty() and termios.tcgetattr(self.stdin.fileno())
+        if self.opts.config:
+            self.configcwd = self.opts.config.parent
+        else:
+            self.configcwd = Path('.')
+        self.questions, self.anomalies = self.configextra()
+
+    def reload(self) -> None:
+        prev = self.config, self.resolver
+        super().reload()
+        try:
+            self.questions, self.anomalies = self.configextra()
+        except:
+            self.config, self.resolver = prev
+            raise
+
+    def configextra(self) -> tuple[list[Question], list[Anomaly]]:
+        qentries = (
+            self.config.get('questions') or [DEFAULT_QNAME])
+        questions = list(resolve_questions(qentries, self.configcwd))
+        anomalies = deque(
+            map(Anomaly.model_validate, self.config.get('anomalies', [])))
+        return questions, anomalies
 
     def run(self) -> None:
-        self.setup()
         with self.ttycontext():
             table = self.opts.format == 'table' and self.opts.tablefmt
             self.report(state=self.resolver.state.report(table=table))
@@ -170,25 +268,6 @@ class MainCommand(BaseCommand[MainOptions]):
                     self.loop()
             except self.termerrors:
                 pass
-
-    def setup(self) -> None:
-        self.tcorgattr = self.stdin.isatty() and termios.tcgetattr(self.stdin.fileno())
-        if self.opts.config:
-            cwd = self.opts.config.parent
-            with self.opts.config.open() as file:
-                config = yaml.safe_load(file)
-        else:
-            cwd = Path('.')
-            config = {}
-        qentries = (
-            config.pop('questions', None) or [DEFAULT_QNAME])
-        self.questions = list(resolve_questions(qentries, cwd))
-        self.anomalies = deque(
-            map(Anomaly.model_validate, config.pop('anomalies', [])))
-        self.resolver = registry[self.opts.alg](config=config)
-        if self.opts.load:
-            with self.opts.load.open() as file:
-                self.resolver.state.load(yaml.safe_load(file))
 
     def loop(self) -> None:
         self.prep_anomaly()
@@ -248,26 +327,6 @@ class MainCommand(BaseCommand[MainOptions]):
             if not self.paused and 0 < self.opts.interval < t:
                 raise UserContinue
 
-    def save(self) -> None:
-        with self.opts.output.open('w') as file:
-            yaml.safe_dump(self.resolver.state.model_dump(), file, sort_keys=False)
-
-    def report(self, *args, **kw) -> None:
-        info = dict(*args, **kw)
-        stdout = self.stdout
-        if self.opts.format == 'json':
-            json.dump(info, stdout, indent=2)
-            stdout.write('\n')
-        elif self.opts.format in ('yaml', 'table'):
-            yaml.dump(info, stdout, sort_keys=False, width=float('inf'))
-            stdout.write('\n---\n')
-            if not stdout.isatty():
-                # Piping to yq needs this
-                stdout.write('---\n---\n')
-        else:
-            raise NotImplementedError
-        stdout.flush()
-
     @contextmanager
     def ttycontext(self, when: int = termios.TCSADRAIN) -> Generator[None]:
         if not self.stdin.isatty():
@@ -292,7 +351,7 @@ class KeyAction:
         '-': 'slower',
         '?': 'help'}
 
-    def __init__(self, cmd: MainCommand) -> None:
+    def __init__(self, cmd: DevCommand) -> None:
         self.cmd = cmd
 
     def __call__(self, key: str) -> None:
