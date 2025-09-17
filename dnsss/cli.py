@@ -331,16 +331,16 @@ class KeyAction:
 
     def cmd_anomaly(self) -> None:
         cmd = self.cmd
-        opt = self.input('Set anomaly: <pat>/<delay>[/[limit]]')
+        opt = self.input('Set anomaly: <pattern>/<delay>[/[limit]]')
         if opt:
             parts = opt.removesuffix('/').split('/')
             if len(parts) == 2:
                 parts.append(None)
             try:
-                pat, delay, limit = parts
+                pattern, delay, limit = parts
                 anomaly = Anomaly(
                     limit=limit,
-                    delayers=[dict(pat=pat, delay=delay)])
+                    delayers=[dict(pattern=pattern, delay=delay)])
             except ValueError as err:
                 cmd.report(error=str(err))
                 return

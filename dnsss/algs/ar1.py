@@ -53,7 +53,7 @@ class ARStats(RunningVariance):
     latest: NonNegativeFloat = 0.0
     "The latest observed response time for this server"
     mean_xy: NonNegativeFloat = 0.0
-    "The mean of the product of the last two response times"
+    "The mean of the product of the last observed response times for this server"
     mean_v2: NonNegativeFloat = 0.0
     "The mean of the square of the response time to this server"
     idle: NonNegativeInt = 0
@@ -113,8 +113,10 @@ class ARStats(RunningVariance):
                                 E[X**2] - E[X**2]
             """
             # This is clearly an error, as the denominator equals zero.
-            # What follows is a best-guess interpretation, and a work
-            # in progress.
+            # Here, we interpret the denominator as:
+            #
+            #                   E[X**2] - E[X]**2
+            #
             mean2 = self.mean**2
             self.alpha = (self.mean_xy - mean2) / (self.mean_v2 - mean2)
             # Normalize alpha
@@ -151,7 +153,9 @@ class State(bind.State):
 
     def add(self, S: Server) -> None:
         super().add(S)
-        if S not in self.SAR:
+        if S in self.SAR:
+            self.SAR[S].params = self.params
+        else:
             self.SAR[S] = ARStats(params=self.params)
             self.SAR[S].reset()
 

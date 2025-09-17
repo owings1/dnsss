@@ -4,6 +4,7 @@ import ipaddress
 import math
 import operator
 import re
+from functools import cached_property
 from typing import Annotated, Any, Callable, Literal, Self
 
 import pydantic
@@ -42,8 +43,7 @@ __all__ = [
     'SerializerFunctionWrapHandler',
     'Server',
     'ValidationError',
-    'valnnf',
-    'valpat']
+    'valnnf']
 
 type Server = str
 type Rcode = str
@@ -58,14 +58,8 @@ type Domain = Annotated[
 NonNegFloatTa = TypeAdapter(NonNegativeFloat)
 
 def valnnf(value: float) -> NonNegativeFloat:
+    'Validate a NonNegativeFloat'
     return NonNegFloatTa.validate_python(value)
-
-def valpat(value: str) -> str:
-    try:
-        re.compile(value)
-    except ValueError:
-        raise ValidationError
-    return value
 
 class BaseModel(pydantic.BaseModel):
 
@@ -74,75 +68,37 @@ class BaseModel(pydantic.BaseModel):
         return self.model_dump(**kw)
 
     @model_serializer(mode='wrap')
-    def _ser(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> dict:
+    def terse_serializer(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> dict[str, Any]:
         data: dict = handler(self)
         if info.context and info.context.get('terse'):
             for key in self.model_config.get('terse_exclude', ()):
                 data.pop(key, None)
         return data
 
+    def generic_ordering(self, other: Self, comparator: Callable[[Self, Self], bool]):
+        attr = self.model_config.get('ordering_attribute')
+        if attr and type(self) is type(other):
+            return comparator(getattr(self, attr), getattr(other, attr))
+        return NotImplemented
+
     def __lt__(self, other: Self):
-        return generic_ordering(operator.lt, self, other)
+        return self.generic_ordering(other, operator.lt)
 
     def __gt__(self, other: Self):
-        return generic_ordering(operator.gt, self, other)
+        return self.generic_ordering(other, operator.gt)
 
     def __lte__(self, other: Self):
-        return generic_ordering(operator.le, self, other)
+        return self.generic_ordering(other, operator.le)
 
     def __gte__(self, other: Self):
-        return generic_ordering(operator.ge, self, other)
-
-class DomainRule(BaseModel):
-    domain: Domain = Field(min_length=1, frozen=True)
-    servers: list[Server] = Field(min_length=1)
-    exclude: list[Domain] = Field(default_factory=list)
-    model_config = ConfigDict(ordering_attribute='order')
-
-    @property
-    def order(self) -> NegativeInt:
-        return -len(self.domain)
-
-    def matches(self, qname: str) -> bool:
-        qname = qname.rstrip('.').lower()
-        if qname == self.domain or qname.endswith(f'.{self.domain}'):
-            for excl in self.exclude:
-                if qname == excl or qname.endswith(f'.{excl}'):
-                    break
-            else:
-                return True
-        return False
-
-class Response(BaseModel):
-    S: Server
-    R: NonNegativeFloat
-    q: Question
-    code: Rcode
-    rset: Rset
-    failed: list[Server]|None = None
-
-    def report(self, **kw) -> dict[str, Any]:
-        kw['exclude_none'] = True
-        data = super().report(**kw)
-        data['q'] = f'{self.q.qname} {self.q.rdtype}'
-        data['rset'] = len(self.rset)
-        return data
-
-class MockServer(BaseModel):
-    r: PositiveFloat = 0.005
-    volatility: NonNegativeFloat = 0.1
-
-class Delayer(BaseModel):
-    pat: Annotated[str, AfterValidator(valpat)]
-    delay: NonNegativeFloat = 0.0
-
-class Anomaly(BaseModel):
-    limit: NonNegativeInt|None = None
-    delayers: list[Delayer] = Field(default_factory=list)
+        return self.generic_ordering(other, operator.ge)
 
 class Question(BaseModel):
+    "DNS question info"
     qname: str
+    "The question name (domain)"
     rdtype: RdType = 'A'
+    "The record type requested"
 
     @model_validator(mode='after')
     def autoreverse(self) -> Self:
@@ -155,7 +111,32 @@ class Question(BaseModel):
                 self.qname = ip.reverse_pointer
         return self
 
+class Response(BaseModel):
+    "DNS response info"
+    S: Server
+    "The server that responded"
+    R: NonNegativeFloat
+    "The response time"
+    q: Question
+    "The DNS question"
+    code: Rcode
+    "The response code (NOERROR, NXDOMAIN, TIMEOUT, etc.)"
+    rset: Rset
+    "The records returned"
+    failed: list[Server]|None = None
+    "A list of servers that were tried & failed (TIMEOUT), if any"
+
+    def report(self, **kw) -> dict[str, Any]:
+        "Compact display data"
+        kw.update(exclude_none=True)
+        return super().report(**kw)|dict(
+            q=f'{self.q.qname} {self.q.rdtype}',
+            rset=len(self.rset))
+
 class RunningMean(BaseModel):
+    """
+    Track running mean
+    """
     count: NonNegativeInt = 0
     'Total sample count'
     mean: NonNegativeFloat = 0.0
@@ -163,11 +144,14 @@ class RunningMean(BaseModel):
     model_config = ConfigDict(ordering_attribute='mean')
 
     def observe(self, value: NonNegativeFloat) -> None:
+        'Update the running totals from the observed value'
         self.count += 1
         self.mean += (value - self.mean) / self.count
 
 class RunningVariance(RunningMean):
     """
+    Track running variance & standard deviation
+
     References:
     
     - Welford's online algorithm
@@ -192,8 +176,58 @@ class RunningVariance(RunningMean):
             self.variance = self.delta_m2 / (self.count - 1)
             self.stdev = math.sqrt(self.variance)
 
-def generic_ordering[T: BaseModel](comparator: Callable[[T, T], bool], inst: T, other: T):
-    attr = inst.model_config.get('ordering_attribute')
-    if attr and type(inst) is type(other):
-        return comparator(getattr(inst, attr), getattr(other, attr))
-    return NotImplemented
+class DomainRule(BaseModel):
+    """
+    Domain matching rule for resolver config
+    """
+    domain: Domain = Field(min_length=1, frozen=True)
+    "The base domain"
+    exclude: tuple[Domain, ...] = Field(default=(), frozen=True)
+    "Subdomains to exclude"
+    servers: list[Server] = Field(min_length=1)
+    "Non-empty list of servers"
+    model_config = ConfigDict(ordering_attribute='order')
+
+    def matches(self, qname: str) -> bool:
+        "Whether the rule matches question (domain) name"
+        return bool(self.inclpat.match(qname) and not self.exclpat.match(qname))
+
+    @property
+    def order(self) -> NegativeInt:
+        return -len(self.domain)
+
+    @cached_property
+    def inclpat(self) -> re.Pattern:
+        return self.buildpat(self.domain)
+
+    @cached_property
+    def exclpat(self) -> re.Pattern:
+        return self.buildpat(*self.exclude)
+
+    @classmethod
+    def buildpat(cls, *domains: Domain) -> re.Pattern:
+        if not domains:
+            return re.compile(r'.^')
+        ors = '|'.join(map(re.escape, domains))
+        return re.compile(ors.join((r'^(.+\.)?(', r')\.?$')), re.I)
+
+class Anomaly(BaseModel):
+    'Anomaaly parameters'
+    limit: NonNegativeInt|None = None
+    'Number of total resolver queries to apply this anomaly'
+    delayers: list[Delayer] = Field(default_factory=list)
+    'List of delay configs'
+
+class Delayer(BaseModel):
+    'Anomaaly delayer parameters'
+    pattern: Annotated[str, AfterValidator(lambda x: re.compile(x) and x)]
+    'Server match pattern'
+    delay: NonNegativeFloat = 0.0
+    'The delay to apply'
+
+class MockServer(BaseModel):
+    "Mock server parameters"
+    r: PositiveFloat = 0.005
+    'Base response time'
+    v: NonNegativeFloat = 0.1
+    'Volatility'

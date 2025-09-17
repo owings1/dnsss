@@ -30,8 +30,6 @@ class Config(BaseModel):
         list[DomainRule],
         AfterValidator(sorted)] = Field(default_factory=list)
     'Domain rules'
-    params: Params = Field(default_factory=Params, frozen=True)
-    'Algorithm-specific parameters'
     timeout_max: PositiveFloat = 5.0
     'Default/max server timeout seconds'
     timeout_min: PositiveFloat = 1.0
@@ -40,6 +38,8 @@ class Config(BaseModel):
     'Maximum number of retries for timeouts'
     tcp: bool = False
     'Whether to use TCP'
+    params: Params = Field(default_factory=Params, frozen=True)
+    'Algorithm-specific parameters'
 
 class State(RunningMean):
     SM: Annotated[
@@ -47,6 +47,7 @@ class State(RunningMean):
         PlainSerializer(dvsorted)] = Field(default_factory=dict)
     'Running means of server response times'
     params: Params = Field(default_factory=Params, exclude=True)
+    'Reference to the algorithm params'
     model_config = ConfigDict(sfields=['SM'])
 
     def add(self, S: Server) -> None:
@@ -89,21 +90,21 @@ class State(RunningMean):
             self.add(Si)
 
     def report(self, *, table: bool|str = False, **kw) -> dict[str, Any]:
-        'Display data'
+        "Compact display data"
         data = super().report(**kw)
-        data['servers'] = defaultdict(dict)
+        sdata = defaultdict(dict)
         for field in self.model_config.get('sfields', []):
             key = str(field).removeprefix('S')
             for Si, Vi in data.pop(field, {}).items():
-                data['servers'][Si][key] = Vi
+                sdata[Si][key] = Vi
+        sdata = dict(sdata)
         if table:
             rows = [
                 dict(Server=Si)|dkpathed(SVi)
-                for Si, SVi in data['servers'].items()]
+                for Si, SVi in sdata.items()]
             tablefmt = None if table is True else table
-            data['servers'] = tablestr(rows, headers='keys', tablefmt=tablefmt)
-        else:
-            data['servers'] = dict(data['servers'])
+            sdata = tablestr(rows, headers='keys', tablefmt=tablefmt)
+        data['servers'] = sdata
         return data
 
 class Resolver(BaseModel):
@@ -116,11 +117,20 @@ class Resolver(BaseModel):
     def model_post_init(self, context: Any, /) -> None:
         super().model_post_init(context)
         self.state.params = self.config.params
-        for Si in self.config.servers:
-            self.state.add(Si)
+        for server in self.config.servers:
+            self.state.add(server)
         for rule in self.config.rules:
-            for Si in rule.servers:
-                self.state.add(Si)
+            for server in rule.servers:
+                self.state.add(server)
+
+    def select(self, q: Question) -> list[Server]:
+        """
+        Returns all applicable servers for a question based on domain rule
+        """
+        for rule in self.config.rules:
+            if rule.matches(q.qname):
+                return rule.servers
+        return self.config.servers
 
     def lifetime(self, S: Server, q: Question) -> PositiveFloat:
         """
@@ -128,64 +138,65 @@ class Resolver(BaseModel):
         """
         return self.config.timeout_max
 
-    def select(self, q: Question) -> list[Server]:
-        'Select the list of servers for a question based on domain rule'
-        for rule in self.config.rules:
-            if rule.matches(q.qname):
-                return rule.servers
-        return self.config.servers
-
     def query(self, q: Question) -> Response:
         """
-        Make a DNS query. Sublcasses should not need to override this method.
+        Perform a DNS query with retries. Sublcasses should not need to override this method.
         """
         q = Question.model_validate(q)
+        # Get all applicable servers based on domain rules
         servers = self.select(q)
         failed: list[Server] = []
         rep: Response|None = None
         while not rep:
+            # Rank order the servers
             servers = self.state.ranked(servers)
             if not servers:
                 raise ValueError(f'No servers {q=}')
             for S in servers:
+                # Apply any delay anomalies
                 for delayer in self.delayers:
-                    if re.match(delayer.pat, S):
+                    if re.match(delayer.pattern, S):
                         delay = delayer.delay
                         break
                 else:
                     delay = 0.0
+                # Compute the timeout to send to the backend
                 lifetime = max(
                     self.config.timeout_min,
                     min(self.config.timeout_max, self.lifetime(S, q)))
                 delay = valnnf(min(delay, lifetime))
                 lifetime -= delay
-                resolve = resolve_func(S)
+                # Get the response from the backend
+                backend = resolve_backend(S)
                 t = time.monotonic() - delay
-                code, rset, R = resolve(q, lifetime=lifetime, tcp=self.config.tcp)
+                code, rset, R = backend(q, lifetime=lifetime, tcp=self.config.tcp)
                 R += time.monotonic() - t
+                # Report the response time & result
                 self.state.observe(S, R, code, servers)
                 if code != 'TIMEOUT' or len(failed) >= self.config.retries_max:
+                    # A successful response, or max retries reached with TIMEOUT
                     rep = Response(S=S, R=R, q=q, code=code, rset=rset, failed=failed or None)
                     break
                 failed.append(S)
         return rep
 
 @functools.cache
-def resolve_func(S: Server) -> ResolveFunc:
-    where, pstr = (f'{S}'.split('@', maxsplit=1) + [None])[:2]
-    if where.startswith('mock'):
-        mvals = pstr and pstr.split(',') or []
-        m = MockServer(**dict(zip(['r', 'volatility'], mvals)))
-        return make_mock_resolve_func(m)
-    else:
-        port = int(pstr or 53)
-        return make_dns_resolve_func(where, port)
+def resolve_backend(server: Server) -> ResolveFunc:
+    'Create the backend resolve function for the server'
+    if server.startswith('mock'):
+        configstr, = (server.split('@', maxsplit=1)[1:] or [''])
+        opts = dict(
+            itemstr.split('=') for itemstr in
+            filter(None, configstr.split(',')))
+        return _mock_backend(**opts)
+    return _dnspython_backend(*server.split('@', maxsplit=1))
 
-def make_dns_resolve_func(where: str, port: int = 53) -> ResolveFunc:
-    f = dns.resolver.make_resolver_at(where, port).resolve
+def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
+    "Make a backend resolve function for a server/port using dnspython"
+    backend = dns.resolver.make_resolver_at(where, int(port))
     def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
         try:
-            rep = f(
+            rep = backend.resolve(
                 **q.model_dump(),
                 raise_on_no_answer=False,
                 lifetime=lifetime,
@@ -201,10 +212,11 @@ def make_dns_resolve_func(where: str, port: int = 53) -> ResolveFunc:
         return code, [*map(str, rep)], 0.0
     return resolve
 
-def make_mock_resolve_func(mock: MockServer) -> ResolveFunc:
-    mock = MockServer.model_validate(mock)
+def _mock_backend(**opts) -> ResolveFunc:
+    "Make a mock backend resolve function"
+    mock = MockServer.model_validate(opts)
     def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
-        d = random.uniform(0, mock.volatility)
+        d = random.uniform(0, mock.v)
         R = mock.r + mock.r * d
         rset = []
         if R >= lifetime:

@@ -15,7 +15,9 @@ __all__ = [
 
 K = TypeVar('K')
 T = TypeVar('T')
+
 YAML_FLOAT_PRECISION = 6
+YAML_FLOAT_FMT = f'.{YAML_FLOAT_PRECISION}f'
 
 def bykey(item: tuple[T, Any]) -> T:
     "Item key sort"
@@ -47,7 +49,7 @@ def dvsorted(mapping: Mapping[K, T], reverse: bool = False) -> dict[K, T]:
 
 def tablestr(*args, **kw) -> LiteralStr:
     "Block literal table string for YAML"
-    kw.setdefault('floatfmt', f'.{YAML_FLOAT_PRECISION}f')
+    kw.setdefault('floatfmt', YAML_FLOAT_FMT)
     return LiteralStr(tabulate.tabulate(*args, **kw))
 
 class LiteralStr(str):
@@ -62,4 +64,4 @@ yaml.add_representer(LiteralStr, LiteralStr.representer)
 yaml.add_representer(
     float,
     lambda dumper, data: (
-        dumper.represent_float(float(f'{data:.{YAML_FLOAT_PRECISION}f}'))))
+        dumper.represent_float(float(f'{data:{YAML_FLOAT_FMT}}'))))

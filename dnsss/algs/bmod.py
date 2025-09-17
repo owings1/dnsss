@@ -1,5 +1,5 @@
 """
-Modified BIND algorithm with the following optimization:
+(Experimental) Modified BIND algorithm with the following optimization:
 
 Compute a value RM for each server S just like the BIND R value, except that RM
 is not discounted when S is not queried.

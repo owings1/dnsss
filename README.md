@@ -118,7 +118,7 @@ anomalies:
     limit: 100
     delayers:
       - # Server regex to target
-        pat: '10\.123'
+        pattern: '10\.123'
         # The delay to add
         delay: 0.01
   # This removes any delay for the next 100 queries
@@ -127,12 +127,12 @@ anomalies:
   - limit: 0
     # These won't run
     delayers:
-      - pat: .*
+      - pattern: .*
         delay: 0.5
   # A null/missing limit means run forever
   - limit: null
     delayers:
-      - pat: '192.168'
+      - pattern: '192.168'
         delay: 0.001
 ```
 
