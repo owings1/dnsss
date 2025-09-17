@@ -128,6 +128,7 @@ class ARStats(RunningVariance):
             """
             self.alpha = max(params.alpha_min, min(params.alpha_max, self.alpha))
         self.latest = value
+        # Clear the idle count
         self.idle = 0
 
     def predict(self) -> None:
@@ -139,6 +140,7 @@ class ARStats(RunningVariance):
         self.P = atok * self.latest + (1 - atok) * self.mean
 
     def reset(self) -> None:
+        "Reset the stats"
         defaults = type(self)(params=self.params).model_dump()
         for name, value in defaults.items():
             setattr(self, name, value)
@@ -148,8 +150,9 @@ class State(bind.State):
     SAR: Annotated[
         dict[Server, ARStats],
         PlainSerializer(dvsorted)] = Field(default_factory=dict)
+    "Mapping of each server to its ARStats"
     params: Params = Field(default_factory=Params, exclude=True)
-    model_config = ConfigDict(sfields=['SAR', 'SR', 'SM'])
+    model_config = ConfigDict(sfields=['SAR', 'SM', 'SR'])
 
     def add(self, S: Server) -> None:
         super().add(S)
@@ -164,11 +167,13 @@ class State(bind.State):
         for Si in servers:
             ARi = self.SAR[Si]
             if Si == S:
+                # Update the ARStats of the queried server
                 ARi.observe(R)
             else:
+                # Increment the idle count for all the other server
                 ARi.idle += 1
-            # Compute prediction
             if ARi.count >= self.params.p_count_min:
+                # Compute the AR prediction
                 ARi.predict()
 
     def rank(self, S: Server) -> float:

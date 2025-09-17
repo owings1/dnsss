@@ -140,7 +140,7 @@ class Resolver(BaseModel):
 
     def query(self, q: Question) -> Response:
         """
-        Perform a DNS query with retries. Sublcasses should not need to override this method.
+        Perform a DNS query with retries.
         """
         q = Question.model_validate(q)
         # Get all applicable servers based on domain rules
@@ -217,7 +217,7 @@ def _mock_backend(**opts) -> ResolveFunc:
     mock = MockServer.model_validate(opts)
     def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
         d = random.uniform(0, mock.v)
-        R = mock.r + mock.r * d
+        R = mock.r * (1 + d)
         rset = []
         if R >= lifetime:
             code = 'TIMEOUT'
