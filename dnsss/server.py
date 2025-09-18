@@ -149,9 +149,10 @@ class ServeCommand(CommonCommand[ServeOptions]):
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:
         super().add_arguments(parser)
-        parser.add_argument('--port', '-p')
-        parser.add_argument('--address', '-b')
-        parser.add_argument('--replog')
+        arg = parser.add_argument
+        arg('--port', '-p')
+        arg('--address', '-b')
+        arg('--replog')
 
     def setup(self) -> None:
         super().setup()
@@ -204,8 +205,8 @@ class ServeCommand(CommonCommand[ServeOptions]):
             proto=handler.proto,
             query=rep.report())
         replog.info('%(code)s', dict(code=rep.code), extra=data|data['query'])
-        state = self.resolver.state.report(table=self.opts.table)
-        self.reports.append(dict(data, state=state))
+        data |= self.resolver.report(table=self.opts.table)
+        self.reports.append(dict(data))
 
 if __name__ == '__main__':
     ServeCommand.main()

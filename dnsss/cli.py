@@ -17,7 +17,7 @@ from io import TextIOBase
 from pathlib import Path
 from select import select
 from typing import (Annotated, Any, ClassVar, Generator, Iterable, Iterator,
-                    Self, Sequence)
+                    Sequence)
 
 import yaml
 
@@ -86,8 +86,8 @@ class CommonOptions(CommandOptions):
     algorithm: Annotated[str, BeforeValidator(valalg)] = Field(
         default=settings.DEFAULT_ALG)
     config: Path|None = None
-    output: Path|None = None
-    load: Path|None|bool = Field(
+    output: Path = Path('state.yml')
+    load: Annotated[Path|bool, BeforeValidator(lambda x: x is None or x)] = Field(
         default=False,
         description='Load state from file')
     save: bool = False
@@ -95,16 +95,6 @@ class CommonOptions(CommandOptions):
     tablefmt: str = settings.DEFAULT_TABLEFMT
     quiet: bool = False
     report: Path|None = None
-
-    @model_validator(mode='after')
-    def induce_default(self) -> Self:
-        if self.output is None:
-            self.output = Path(f'state.{self.algorithm}.yml')
-        if self.load is False:
-            self.load = None
-        elif self.load is None or self.load is True:
-            self.load = self.output
-        return self
 
     @property
     def table(self) -> bool|str:
@@ -116,6 +106,7 @@ class DevOptions(CommonOptions):
 
 class CommonCommand[O: CommonOptions](BaseCommand[O]):
     options_model: ClassVar = CommonOptions
+    reloadable: ClassVar = ['output', 'save', 'report', 'format']
 
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:
@@ -160,21 +151,37 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
         else:
             self.config = {}
             self.configcwd = Path('.')
-        defaults = self.options_model.model_validate(self.config)
-        for name in defaults.model_dump(exclude_none=True, exclude=['config']):
-            if getattr(nsopts, name, ...) in (None, False):
-                value = getattr(defaults, name)
-                if isinstance(value, Path) and nsopts.config:
-                    # Relativize paths to config file if they were not
-                    # specified on the command line
-                    value = self.configcwd/value
+        # Options set in the config file
+        self.implicits = (
+            self.options_model.model_validate(
+                self.config.get('options') or {})
+            .model_dump(exclude_unset=True))
+        # Options passed on the command line take precedence
+        UNSET = (None, False, ...)
+        self.explicits = {
+            name: value for name, value
+            in vars(nsopts).items()
+            if value not in UNSET}
+        for name, value in self.implicits.items():
+            if name in self.explicits:
+                # Ignore config file for options set on the command line
+                continue
+            if isinstance(value, Path):
+                # Relativize paths to config file if they were not
+                # specified on the command line
+                self.implicits[name] = value = self.configcwd/value
+            if getattr(nsopts, name, ...) in UNSET:
                 setattr(nsopts, name, value)
+        for name in tuple(vars(nsopts)):
+            # Clear empty values from args namespace
+            if getattr(nsopts, name) in UNSET:
+                delattr(nsopts, name)
         super().__init__(parser, nsopts)
 
     def setup(self) -> None:
         super().setup()
         self.resolver = registry[self.opts.algorithm](config=self.config)
-        if self.opts.output and self.opts.save and not self.opts.output.exists():
+        if self.opts.save and not self.opts.output.exists():
             # Initialize output file if save option is enabled, so if it is
             # the same as the --load file, we won't throw an error. Otherwise
             # you would have to call the program first without the --load argument,
@@ -183,6 +190,8 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
             with self.opts.output.open('w') as file:
                 yaml.safe_dump({}, file)
         if self.opts.load:
+            if self.opts.load is True:
+                self.opts.load = self.opts.output
             with self.opts.load.open() as file:
                 state = yaml.safe_load(file) or {}
             self.resolver.state.load(state)
@@ -192,17 +201,32 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
         if not self.opts.config:
             return
         with self.opts.config.open() as file:
-            config: dict = yaml.safe_load(file) or {}
-        # Supported changes:
-        #    - Resolver config & params
-        #    - Servers & domain rules
-        #    - Questions/Anomalies (see DevCommand)
-        # TODO:
-        #    - The resolver algorithm (class)
-        #    - Output file path options
+            config: dict = yaml.safe_load(file) or {} 
+        # Reload options
+        implicits = (
+            self.options_model.model_validate(
+                config.get('options') or {})
+            .model_dump(exclude_unset=True))
+        names = (
+            set(implicits).union(self.implicits)
+            .intersection(self.reloadable)
+            .difference(self.explicits))
+        opts = self.opts
+        for name in names:
+            if name not in implicits:
+                logger.info(f'Updating {name}')
+                continue
+            value = implicits[name]
+            if isinstance(value, Path):
+                implicits[name] = value = self.configcwd/value
+            if getattr(opts, name) != value:
+                logger.info(f'Updating {name}')
+                setattr(opts, name, value)
+        # Create new resolver
         resolver: ResolverType = type(self.resolver)(config=config)
         resolver.state.load(self.resolver.state)
-        self.config, self.resolver = config, resolver
+        self.config, self.resolver, self.implicits, self.opts = (
+            config, resolver, implicits, self.options_model.model_validate(opts))
 
     def save(self) -> None:
         "Save the resolver state to the file"
@@ -263,28 +287,20 @@ class DevCommand(CommonCommand[DevOptions]):
         arg('--interval', '-n', help='Poll interval')
         arg('--count', '-c', help='Number of queries after which to quit')
 
-    def __init__(self, parser: ArgumentParser, opts: Namespace) -> None:
+    def setup(self) -> None:
+        super().setup()
         self.paused = False
         self.count = 0
         self.anomaly: Anomaly|None = None
         self.keyaction = KeyAction(self)
-        super().__init__(parser, opts)
-
-    def setup(self) -> None:
-        super().setup()
         self.tcorgattr = (
             self.stdin.isatty() and
             termios.tcgetattr(self.stdin.fileno()))
         self.questions, self.anomalies = self.configextra()
 
     def reload(self) -> None:
-        prev = self.config, self.resolver
         super().reload()
-        try:
-            self.questions, self.anomalies = self.configextra()
-        except:
-            self.config, self.resolver = prev
-            raise
+        self.questions, self.anomalies = self.configextra()
 
     def configextra(self) -> tuple[list[Question], deque[Anomaly]]:
         qentries = self.config.get('questions') or [settings.DEFAULT_QNAME]
@@ -295,8 +311,8 @@ class DevCommand(CommonCommand[DevOptions]):
 
     def run(self) -> None:
         with self.ttycontext():
-            state = self.resolver.state.report(table=self.opts.table)
-            self.report(state=state)
+            report = self.resolver.report(table=self.opts.table)
+            self.report(report)
             if self.stdin.isatty():
                 tty.setcbreak(self.stdin.fileno())
             try:
@@ -327,8 +343,7 @@ class DevCommand(CommonCommand[DevOptions]):
                 if self.anomaly.limit is not None:
                     self.anomaly.limit -= 1
                 report.update(anomaly=self.anomaly.model_dump())
-            state = self.resolver.state.report(table=self.opts.table)
-            report.update(state=state)
+            report |= self.resolver.report(table=self.opts.table)
             self.report(report)
         finally:
             if self.opts.save:
@@ -380,6 +395,7 @@ class KeyAction:
         'Q': 'quit',
         'S': 'save',
         'P': 'pause',
+        'R': 'reload',
         'I': 'interval',
         'A': 'anomaly',
         '+': 'faster',
@@ -410,6 +426,11 @@ class KeyAction:
             cmd.paused = not cmd.paused
             cmd.reportusr(paused=cmd.paused)
 
+    def cmd_reload(self) -> None:
+        cmd = self.cmd
+        cmd.reload()
+        cmd.reportusr(reloaded=True)
+        
     def cmd_interval(self) -> None:
         cmd = self.cmd
         opt = self.input('Set interval')

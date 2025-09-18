@@ -148,6 +148,10 @@ timeout_min: 1.0
 retries_max: 3
 # Whether to use TCP for DNS queries
 tcp: false
+# Some CLI options can be set as defaults
+options:
+  algorithm: AR1
+  # ...
 ```
 
 ## References

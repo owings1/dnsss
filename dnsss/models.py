@@ -189,19 +189,23 @@ class RunningVariance(RunningMean):
 
 class DomainRule(DataModel):
     """
-    Domain matching rule for resolver config
+    Domain forwarding rule for resolver config
     """
     domain: Domain = Field(min_length=1, frozen=True)
     "The base domain"
     exclude: tuple[Domain, ...] = Field(default=(), frozen=True)
     "Subdomains to exclude"
-    servers: list[Server] = Field(min_length=1)
+    servers: tuple[Server, ...] = Field(min_length=1, frozen=True)
     "Non-empty list of servers"
+    tag: str|None = None
+    "Optional tag name of the servers group for logging"
     model_config = ConfigDict(ordering_attribute='order')
 
     def matches(self, qname: str) -> bool:
         "Whether the rule matches question (domain) name"
-        return bool(self.inclpat.match(qname) and not self.exclpat.match(qname))
+        return bool(
+            self.inclpat.match(qname) and
+            not self.exclpat.match(qname))
 
     @property
     def order(self) -> NegativeInt:
