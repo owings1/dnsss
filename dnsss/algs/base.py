@@ -17,10 +17,10 @@ type ResolveFunc = Callable[[Question, NonNegativeFloat, bool], ResolveFuncRet]
 
 __all__ = ()
 
-class Params(BaseModel):
+class Params(DataModel):
     pass
 
-class Config(BaseModel):
+class Config(DataModel):
     servers: list[Server] = Field(
         min_length=1,
         default_factory=lambda: dns.resolver.get_default_resolver().nameservers,
@@ -107,7 +107,7 @@ class State(RunningMean):
         data['servers'] = sdata
         return data
 
-class Resolver(BaseModel):
+class Resolver(DataModel):
     'Resolver base class'
     config: Config = Field(default_factory=Config, frozen=True)
     state: State = Field(default_factory=State, frozen=True)

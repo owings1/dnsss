@@ -13,6 +13,7 @@ import tty
 from argparse import ArgumentParser, Namespace
 from collections import deque
 from contextlib import contextmanager
+from io import TextIOBase
 from pathlib import Path
 from select import select
 from typing import (Annotated, Any, ClassVar, Generator, Iterable, Iterator,
@@ -93,6 +94,7 @@ class CommonOptions(CommandOptions):
     format: OutFormat = OutFormat[settings.DEFAULT_FORMAT]
     tablefmt: str = settings.DEFAULT_TABLEFMT
     quiet: bool = False
+    report: Path|None = None
 
     @model_validator(mode='after')
     def induce_default(self) -> Self:
@@ -145,7 +147,8 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
             '--format', '-F',
             choices=OutFormat,
             help=f'Output format, default {settings.DEFAULT_FORMAT}')
-        arg('--quiet', '-q', action='store_true')
+        arg('--quiet', '-q', action='store_true', help='Dont output report')
+        arg('--report', '-r', help='Report to file instead of stdout')
 
     def __init__(self, parser: ArgumentParser, nsopts: Namespace) -> None:
         if nsopts.config:
@@ -158,7 +161,7 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
             self.config = {}
             self.configcwd = Path('.')
         defaults = self.options_model.model_validate(self.config)
-        for name in defaults.model_dump(exclude_none=True):
+        for name in defaults.model_dump(exclude_none=True, exclude=['config']):
             if getattr(nsopts, name, ...) in (None, False):
                 value = getattr(defaults, name)
                 if isinstance(value, Path) and nsopts.config:
@@ -185,10 +188,18 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
             self.resolver.state.load(state)
 
     def reload(self) -> None:
+        "Reload the config file"
         if not self.opts.config:
             return
         with self.opts.config.open() as file:
             config: dict = yaml.safe_load(file) or {}
+        # Supported changes:
+        #    - Resolver config & params
+        #    - Servers & domain rules
+        #    - Questions/Anomalies (see DevCommand)
+        # TODO:
+        #    - The resolver algorithm (class)
+        #    - Output file path options
         resolver: ResolverType = type(self.resolver)(config=config)
         resolver.state.load(self.resolver.state)
         self.config, self.resolver = config, resolver
@@ -200,22 +211,30 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
             yaml.safe_dump(data, file, sort_keys=False)
 
     def report(self, *args, **kw) -> None:
+        if self.opts.report:
+            with self.opts.report.open('w') as out:
+                self.reportout(out, dict(*args, **kw), flush=False)
+            return
         if self.opts.quiet:
             return
-        info = dict(*args, **kw)
-        stdout = self.stdout
-        if self.opts.format == 'json':
-            json.dump(info, stdout, indent=2)
-            stdout.write('\n')
-        elif self.opts.format in ('yaml', 'table'):
-            yaml.dump(info, stdout, sort_keys=False, width=float('inf'))
-            stdout.write('\n---\n')
-            if not stdout.isatty():
-                # Piping to yq needs this
-                stdout.write('---\n---\n')
+        self.reportout(self.stdout, dict(*args, **kw), flush=True)
+
+    def reportusr(self, *args, **kw) -> None:
+        self.reportout(self.stdout, dict(*args, **kw), flush=True)
+
+    def reportout(self, out: TextIOBase, data: Any, flush: bool = False) -> None:
+        if self.opts.format is OutFormat.json:
+            json.dump(data, out, indent=2)
         else:
-            raise NotImplementedError
-        stdout.flush()
+            yaml.dump(data, out, sort_keys=False, width=float('inf'))
+        out.write('\n')
+        if flush:
+            if self.opts.format is not OutFormat.json:
+                out.write('---\n')
+                if not out.isatty():
+                    # Piping to yq needs this
+                    out.write('---\n---\n')
+            out.flush()
 
     def SIGHUP(self, signum, frame) -> None:
         'SIGHUP handler'
@@ -267,7 +286,7 @@ class DevCommand(CommonCommand[DevOptions]):
             self.config, self.resolver = prev
             raise
 
-    def configextra(self) -> tuple[list[Question], list[Anomaly]]:
+    def configextra(self) -> tuple[list[Question], deque[Anomaly]]:
         qentries = self.config.get('questions') or [settings.DEFAULT_QNAME]
         questions = list(resolve_questions(qentries, self.configcwd))
         anomalies = deque(
@@ -383,13 +402,13 @@ class KeyAction:
     def cmd_save(self) -> None:
         cmd = self.cmd
         cmd.save()
-        cmd.report(save=cmd.opts.output.name)
+        cmd.reportusr(save=cmd.opts.output.name)
 
     def cmd_pause(self) -> None:
         cmd = self.cmd
         if cmd.opts.interval:
             cmd.paused = not cmd.paused
-            cmd.report(paused=cmd.paused)
+            cmd.reportusr(paused=cmd.paused)
 
     def cmd_interval(self) -> None:
         cmd = self.cmd
@@ -397,14 +416,14 @@ class KeyAction:
         try:
             interval = valnnf(opt or cmd.opts.interval)
         except ValidationError as err:
-            cmd.report(error=str(err))
+            cmd.reportusr(error=str(err))
         else:
             if interval:
                 interval = min(
                     settings.INTERVAL_MAX,
                     max(settings.INTERVAL_MIN, interval))
             cmd.opts.interval = interval
-            cmd.report(interval=interval)
+            cmd.reportusr(interval=interval)
 
     def cmd_anomaly(self) -> None:
         cmd = self.cmd
@@ -419,13 +438,13 @@ class KeyAction:
                     limit=limit,
                     delayers=[dict(pattern=pattern, delay=delay)])
             except ValueError as err:
-                cmd.report(error=str(err))
+                cmd.reportusr(error=str(err))
                 return
             else:
-                cmd.report(anomaly=anomaly.model_dump())
+                cmd.reportusr(anomaly=anomaly.model_dump())
         else:
             anomaly = None
-            cmd.report(anomaly=anomaly)
+            cmd.reportusr(anomaly=anomaly)
         cmd.anomaly = anomaly
         cmd.prep_anomaly()
 
@@ -437,24 +456,24 @@ class KeyAction:
                 cmd.opts.interval / settings.INTERVAL_STEP)
         else:
             cmd.opts.interval = settings.INTERVAL_START
-        cmd.report(interval=cmd.opts.interval)
+        cmd.reportusr(interval=cmd.opts.interval)
 
     def cmd_slower(self) -> None:
         cmd = self.cmd
         cmd.opts.interval = min(
             settings.INTERVAL_MAX,
             cmd.opts.interval * settings.INTERVAL_STEP)
-        cmd.report(interval=cmd.opts.interval)
+        cmd.reportusr(interval=cmd.opts.interval)
 
     def cmd_help(self) -> None:
-        self.cmd.report(help={
+        self.cmd.reportusr(help={
             key.replace('\n', '[enter]'): value
             for key, value in self.keymap.items()})
 
     def input(self, prompt: str|None = None) -> str:
         cmd = self.cmd
         if prompt:
-            cmd.report(prompt=prompt)
+            cmd.reportusr(prompt=prompt)
         stdin = cmd.stdin
         with cmd.ttycontext():
             if stdin.isatty():

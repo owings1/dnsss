@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import socketserver
 import struct
@@ -8,8 +9,9 @@ import time
 from abc import abstractmethod
 from argparse import ArgumentParser
 from collections import deque
+from pathlib import Path
 from threading import Thread
-from typing import Callable, ClassVar, Self
+from typing import Callable, ClassVar, Literal, Self
 
 from dnslib import (CLASS, HTTPS, QTYPE, RCODE, RDMAP, RR, DNSHeader, DNSLabel,
                     DNSRecord)
@@ -19,9 +21,11 @@ from .algs import ResolverType
 from .cli import CommonCommand, CommonOptions
 from .models import *
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(f'dnsss.server')
+replog = logging.getLogger(f'dnsss.server.response')
 
 class BaseHandler(socketserver.BaseRequestHandler):
+    proto: Literal['TCP', 'UDP']
     resolver: ResolverType
     onquery: Callable[[Self, Response], None]
 
@@ -74,6 +78,7 @@ class BaseHandler(socketserver.BaseRequestHandler):
         raise NotImplementedError
 
 class UDPHandler(BaseHandler):
+    proto = 'UDP'
     request: tuple[bytes, socket.socket]
 
     def read(self) -> bytes:
@@ -100,13 +105,14 @@ class TCPHandler(BaseHandler):
     Apache 2.0 License
     http://www.apache.org/licenses/LICENSE-2.0
     """
+    proto = 'TCP'
     request: socket.socket
 
     def read(self) -> bytes:
         data = self.request.recv(settings.TCP_BUF_SIZE).strip()
         sz: int = struct.unpack('>H', data[:2])[0]
         if sz != len(data) - 2:
-            raise ValueError(f'Wrong size TCP packet {sz=} ln={len(data)}')
+            raise ValueError(f'Wrong size TCP packet {sz=} ln={len(data) - 2}')
         return data[2:]
 
     def send(self, data: bytes) -> None:
@@ -127,8 +133,9 @@ class UDPServer(ServerMixin, socketserver.ThreadingUDPServer):
     BaseHandler = UDPHandler
 
 class ServeOptions(CommonOptions):
-    address: IPvAnyAddress = IPvAnyAddress('127.0.0.1')
-    port: PositiveInt = 5053
+    address: IPvAnyAddress = IPvAnyAddress(settings.LISTEN_ADDRESS)
+    port: Port = settings.LISTEN_PORT
+    replog: Path|None = None
 
     @property
     def address_family(self) -> socket.AddressFamily:
@@ -144,6 +151,7 @@ class ServeCommand(CommonCommand[ServeOptions]):
         super().add_arguments(parser)
         parser.add_argument('--port', '-p')
         parser.add_argument('--address', '-b')
+        parser.add_argument('--replog')
 
     def setup(self) -> None:
         super().setup()
@@ -154,8 +162,13 @@ class ServeCommand(CommonCommand[ServeOptions]):
             return self.resolver
         ns = dict(resolver=property(resolver), onquery=self.onquery)
         self.servers = (UDPServer(self.opts, ns), TCPServer(self.opts, ns))
+        if self.opts.replog:
+            hdler: logging.FileHandler = replog.handlers[0]
+            hdler.baseFilename = str(self.opts.replog)
+            hdler.setLevel(logging.INFO)
 
     def run(self) -> None:
+        logger.info(f'PID: {os.getpid()}')
         threads = [
             Thread(
                 target=server.serve_forever,
@@ -186,12 +199,13 @@ class ServeCommand(CommonCommand[ServeOptions]):
         time.sleep(settings.SERVER_SLEEP_DELAY)
 
     def onquery(self, handler: BaseHandler, rep: Response) -> None:
-        table = self.opts.format == 'table' and self.opts.tablefmt
-        self.reports.append(dict(
+        data = dict(
             peer=handler.client_address[0],
-            query=rep.report(),
-            state=self.resolver.state.report(table=table)))
+            proto=handler.proto,
+            query=rep.report())
+        replog.info('%(code)s', dict(code=rep.code), extra=data|data['query'])
+        state = self.resolver.state.report(table=self.opts.table)
+        self.reports.append(dict(data, state=state))
 
 if __name__ == '__main__':
-    logger = logging.getLogger(f'{__package__}.server')
     ServeCommand.main()

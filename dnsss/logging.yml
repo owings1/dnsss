@@ -3,15 +3,27 @@ disable_existing_loggers: False
 formatters:
   default:
     format: '%(asctime)s %(levelname)s [%(name)s] %(message)s'
+  response:
+    format: '%(asctime)s [%(S)s] [%(peer)s] %(proto)s %(message)s %(R).6f %(q)s'
 handlers:
   default:
     formatter: default
     class: logging.StreamHandler
     stream: ext://sys.stderr
+  response:
+    formatter: response
+    class: logging.FileHandler
+    delay: yes
+    filename: /dev/null
+    level: ERROR
 loggers:
   dnsss:
     level: INFO
     handlers: [default]
+    propagate: no
+  dnsss.server.response:
+    level: INFO
+    handlers: [response]
     propagate: no
 root:
   level: INFO

@@ -12,3 +12,4 @@ questions.*
 *.questions.*
 *.dns
 !*.example.dns
+*.log

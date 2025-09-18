@@ -2,6 +2,7 @@
 !*.example.yml
 !*/**/*.yml
 *.dns
+*.log
 *.questions.*
 *.yml
 **/__pycache__

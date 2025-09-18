@@ -8,6 +8,7 @@ from functools import cached_property
 from typing import Annotated, Any, Callable, Literal, Self
 
 import pydantic
+from annotated_types import Lt
 from pydantic import (AfterValidator, BeforeValidator, ConfigDict, Field,
                       IPvAnyAddress, NegativeInt, NonNegativeFloat,
                       NonNegativeInt, PlainSerializer, PositiveFloat,
@@ -23,6 +24,7 @@ __all__ = [
     'BaseModel',
     'BeforeValidator',
     'ConfigDict',
+    'DataModel',
     'Delayer',
     'DomainRule',
     'Field',
@@ -33,6 +35,7 @@ __all__ = [
     'NonNegativeFloat',
     'NonNegativeInt',
     'PlainSerializer',
+    'Port',
     'PositiveFloat',
     'PositiveInt',
     'Question',
@@ -57,6 +60,9 @@ type RdType = Annotated[
 type Domain = Annotated[
     str,
     AfterValidator(lambda x: x.strip('.').lower())]
+type Port = Annotated[
+    PositiveInt,
+    Lt(65_536)]
 
 NonNegFloatTa = TypeAdapter(NonNegativeFloat)
 
@@ -65,18 +71,6 @@ def valnnf(value: float) -> NonNegativeFloat:
     return NonNegFloatTa.validate_python(value)
 
 class BaseModel(pydantic.BaseModel):
-
-    def report(self, **kw) -> dict[str, Any]:
-        kw.setdefault('context', {}).update(terse=True)
-        return self.model_dump(**kw)
-
-    @model_serializer(mode='wrap')
-    def terse_serializer(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> dict[str, Any]:
-        data: dict = handler(self)
-        if info.context and info.context.get('terse'):
-            for key in self.model_config.get('terse_exclude', ()):
-                data.pop(key, None)
-        return data
 
     def generic_ordering(self, other: Self, comparator: Callable[[Self, Self], bool]):
         attr = self.model_config.get('ordering_attribute')
@@ -96,7 +90,21 @@ class BaseModel(pydantic.BaseModel):
     def __gte__(self, other: Self):
         return self.generic_ordering(other, operator.ge)
 
-class Question(BaseModel):
+class DataModel(BaseModel):
+
+    def report(self, **kw) -> dict[str, Any]:
+        kw.setdefault('context', {}).update(terse=True)
+        return self.model_dump(**kw)
+
+    @model_serializer(mode='wrap')
+    def terse_serializer(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> dict[str, Any]:
+        data: dict = handler(self)
+        if info.context and info.context.get('terse'):
+            for key in self.model_config.get('terse_exclude', ()):
+                data.pop(key, None)
+        return data
+
+class Question(DataModel):
     "DNS question info"
     qname: str
     "The question name (domain)"
@@ -114,7 +122,7 @@ class Question(BaseModel):
                 self.qname = ip.reverse_pointer
         return self
 
-class Response(BaseModel):
+class Response(DataModel):
     "DNS response info"
     S: Server
     "The server that responded"
@@ -133,10 +141,10 @@ class Response(BaseModel):
         "Compact display data"
         kw.update(exclude_none=True)
         return super().report(**kw)|dict(
-            q=f'{self.q.qname} {self.q.rdtype}',
+            q=f'{self.q.rdtype} {self.q.qname}',
             rset=len(self.rset))
 
-class RunningMean(BaseModel):
+class RunningMean(DataModel):
     """
     Track running mean
     """
@@ -179,7 +187,7 @@ class RunningVariance(RunningMean):
             self.variance = self.delta_m2 / (self.count - 1)
             self.stdev = math.sqrt(self.variance)
 
-class DomainRule(BaseModel):
+class DomainRule(DataModel):
     """
     Domain matching rule for resolver config
     """
@@ -214,21 +222,21 @@ class DomainRule(BaseModel):
         ors = '|'.join(map(re.escape, domains))
         return re.compile(ors.join((r'^(.+\.)?(', r')\.?$')), re.I)
 
-class Anomaly(BaseModel):
+class Anomaly(DataModel):
     'Anomaaly parameters'
     limit: NonNegativeInt|None = None
     'Number of total resolver queries to apply this anomaly'
     delayers: list[Delayer] = Field(default_factory=list)
     'List of delay configs'
 
-class Delayer(BaseModel):
+class Delayer(DataModel):
     'Anomaaly delayer parameters'
     pattern: Annotated[str, AfterValidator(lambda x: re.compile(x) and x)]
     'Server match pattern'
     delay: NonNegativeFloat = 0.0
     'The delay to apply'
 
-class MockServer(BaseModel):
+class MockServer(DataModel):
     "Mock server parameters"
     r: PositiveFloat = 0.005
     'Base response time'
