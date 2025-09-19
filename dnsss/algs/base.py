@@ -5,6 +5,7 @@ import random
 import re
 import time
 from collections import defaultdict
+from itertools import chain, islice
 from types import MappingProxyType as MapProxy
 from typing import Annotated, Any, Callable, Iterable, Mapping
 
@@ -206,9 +207,19 @@ class Resolver(DataModel):
         if unkwn:
             servers['UNWN'] = unkwn
         if table:
-            tablefmt = None if table is True else table
+            # Build one big table to have equal column widths
+            lines = tablestr(
+                chain.from_iterable(servers.values()),
+                headers='keys',
+                tablefmt=table).splitlines()
+            # Grab the header so we can repeat it
+            end = len(lines) - sum(map(len, servers.values()))
+            headers = lines[:end]
+            # Reslice the lines back into separate tables
             for tag, sdatas in servers.items():
-                servers[tag] = tablestr(sdatas, headers='keys', tablefmt=tablefmt)
+                start, end = end, end + len(sdatas)
+                body = islice(lines, start, end)
+                servers[tag] = LiteralStr('\n'.join(chain(headers, body)))
         # If there is only one group, skip the unnecessary structure
         if len(servers) == len(groups) == 1:
             servers, = servers.values()

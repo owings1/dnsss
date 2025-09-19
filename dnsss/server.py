@@ -12,7 +12,7 @@ from argparse import ArgumentParser
 from collections import deque
 from pathlib import Path
 from threading import Thread
-from typing import Callable, ClassVar, Literal, Self
+from typing import ClassVar, Literal
 
 from dnslib import (CLASS, HTTPS, QTYPE, RCODE, RDMAP, RR, DNSHeader, DNSLabel,
                     DNSRecord)
@@ -28,7 +28,11 @@ replog = logging.getLogger(f'dnsss.server.response')
 class BaseHandler(socketserver.BaseRequestHandler):
     proto: Literal['TCP', 'UDP']
     resolver: ResolverType
-    onquery: Callable[[Self, Response], None]
+    reports: deque
+    opts: ServeOptions
+
+    def setup(self) -> None:
+        self.response = None
 
     def handle(self) -> None:
         try:
@@ -41,20 +45,34 @@ class BaseHandler(socketserver.BaseRequestHandler):
     def resolve(self, request: DNSRecord) -> DNSRecord:
         header = DNSHeader(id=request.header.id, qr=1, aa=1, ra=1)
         reply = DNSRecord(header=header, q=request.q)
-        response = None
         try:
-            response = self.resolver.query(dict(
+            self.response = rep = self.resolver.query(dict(
                 qname=str(request.q.qname),
                 rdtype=QTYPE[request.q.qtype]))
-            self.onquery(self, response)
-            if response.code == 'NOERROR':
-                reply.add_answer(*map(self.buildrr, response.rset))
+            if rep.code == 'NOERROR':
+                reply.add_answer(*map(self.buildrr, rep.rset))
             else:
-                reply.header.rcode = getattr(RCODE, response.code, RCODE.SERVFAIL)
+                reply.header.rcode = getattr(RCODE, rep.code, RCODE.SERVFAIL)
         except:
-            logger.exception(f'{request=} {response=}')
+            logger.exception(f'{request=} response={rep}')
             reply.header.rcode = RCODE.SERVFAIL
         return reply
+
+    def finish(self) -> None:
+        if not (rep := self.response):
+            return
+        try:
+            data = dict(
+                peer=self.client_address[0],
+                proto=self.proto,
+                query=rep.report())
+            rjson = json.dumps(rep.rset)
+            extra = data|data['query']|dict(tag=rep.tag, rjson=rjson)
+            replog.info('%(code)s', dict(code=rep.code), extra=extra)
+            data |= self.resolver.report(table=self.opts.table)
+            self.reports.append(dict(data))
+        except Exception as err:
+            logger.exception(f'{err!r}')
 
     @staticmethod
     def buildrr(rstr: str) -> RR:
@@ -162,7 +180,7 @@ class ServeCommand(CommonCommand[ServeOptions]):
         # changes on reload() when a new instance is created
         def resolver(_):
             return self.resolver
-        ns = dict(resolver=property(resolver), onquery=self.onquery)
+        ns = dict(resolver=property(resolver), reports=self.reports, opts=self.opts)
         self.servers = (UDPServer(self.opts, ns), TCPServer(self.opts, ns))
         if self.opts.replog:
             hdler: logging.FileHandler = replog.handlers[0]
@@ -199,17 +217,6 @@ class ServeCommand(CommonCommand[ServeOptions]):
             if self.opts.save:
                 self.save()
         time.sleep(settings.SERVER_SLEEP_DELAY)
-
-    def onquery(self, handler: BaseHandler, rep: Response) -> None:
-        data = dict(
-            peer=handler.client_address[0],
-            proto=handler.proto,
-            query=rep.report())
-        rjson = json.dumps(rep.rset)
-        extra = data|data['query']|dict(tag=rep.tag, rjson=rjson)
-        replog.info('%(code)s', dict(code=rep.code), extra=extra)
-        data |= self.resolver.report(table=self.opts.table)
-        self.reports.append(dict(data))
 
 if __name__ == '__main__':
     ServeCommand.main()

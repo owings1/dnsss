@@ -13,6 +13,7 @@ __all__ = [
     'dkpathed',
     'dsorted',
     'dvsorted',
+    'LiteralStr',
     'tablestr']
 
 K = TypeVar('K')
@@ -48,6 +49,10 @@ def dvsorted(mapping: Mapping[K, T], reverse: bool = False) -> dict[K, T]:
 
 def tablestr(*args, **kw) -> LiteralStr:
     "Block literal table string for YAML"
+    tablefmt = kw.pop('tablefmt', None)
+    if tablefmt is True:
+        tablefmt = None
+    kw['tablefmt'] = tablefmt
     kw.setdefault('floatfmt', settings.YAML_FLOAT_FMT)
     return LiteralStr(tabulate.tabulate(*args, **kw))
 
