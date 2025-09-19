@@ -24,9 +24,9 @@ class Params(DataModel):
 class Config(DataModel):
     servers: tuple[Server, ...] = Field(
         min_length=1,
-        default_factory=lambda: dns.resolver.get_default_resolver().nameservers,
+        frozen=True,
         validate_default=True,
-        frozen=True)
+        default_factory=lambda: dns.resolver.get_default_resolver().nameservers)
     'Default server addresses'
     rules: Annotated[
         tuple[DomainRule, ...],
@@ -114,18 +114,20 @@ class Resolver(DataModel):
     delayers: list[Delayer] = Field(default_factory=list)
     'For injecting latency simulations at runtime'
 
-    def select(self, q: Question) -> list[Server]:
+    def select(self, q: Question) -> tuple[list[Server], str]:
         """
         Returns all applicable servers for a question based on forwarding rules
         """
         for base in self.config.rules:
             if base.matches(q.qname):
+                tag = base.tag
                 break
         else:
             base = self.config
-        return list(base.servers)
+            tag = 'DFLT'
+        return list(base.servers), tag
 
-    def lifetime(self, S: Server, q: Question) -> PositiveFloat:
+    def lifetime(self, server: Server, q: Question) -> PositiveFloat:
         """
         Get the timeout for a query to a server.
         """
@@ -137,7 +139,7 @@ class Resolver(DataModel):
         """
         q = Question.model_validate(q)
         # Get all applicable servers based on domain rules
-        servers = self.select(q)
+        servers, tag = self.select(q)
         failed: list[Server] = []
         while True:
             # Rank order the servers
@@ -178,6 +180,7 @@ class Resolver(DataModel):
             q=q,
             code=code,
             rset=rset,
+            tag=tag,
             failed=failed or None)
 
     def report(self, *, table: bool|str = False, **kw) -> dict[str, Any]:
@@ -185,6 +188,8 @@ class Resolver(DataModel):
         groups = self.servergroups
         state = self.state.report(**kw)
         servers = defaultdict(list)
+        totals = defaultdict(int)
+        # Bucket into groups. A server may appear in more than one group
         unkwn = []
         for server, sdata in state['servers'].items():
             if server not in groups:
@@ -192,13 +197,19 @@ class Resolver(DataModel):
                 continue
             for tag in groups[server]:
                 servers[tag].append(sdata)
+                totals[tag] += self.state.SM[server].count
+        # Sort groups by highest total query count
+        servers = {
+            tag: servers[tag] for tag in
+            sorted(servers, key=totals.get, reverse=True)}
+        # The unknown servers go last
         if unkwn:
             servers['UNWN'] = unkwn
         if table:
             tablefmt = None if table is True else table
             for tag, sdatas in servers.items():
                 servers[tag] = tablestr(sdatas, headers='keys', tablefmt=tablefmt)
-        servers = dict(servers)
+        # If there is only one group, skip the unnecessary structure
         if len(servers) == len(groups) == 1:
             servers, = servers.values()
         state['servers'] = servers

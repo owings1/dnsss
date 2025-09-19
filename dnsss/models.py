@@ -134,6 +134,8 @@ class Response(DataModel):
     "The response code (NOERROR, NXDOMAIN, TIMEOUT, etc.)"
     rset: Rset
     "The records returned"
+    tag: str|None = None
+    "The server group or rule tag name, for logging"
     failed: list[Server]|None = None
     "A list of servers that were tried & failed (TIMEOUT), if any"
 

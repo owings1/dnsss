@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import os
 import socket
@@ -204,7 +205,9 @@ class ServeCommand(CommonCommand[ServeOptions]):
             peer=handler.client_address[0],
             proto=handler.proto,
             query=rep.report())
-        replog.info('%(code)s', dict(code=rep.code), extra=data|data['query'])
+        rjson = json.dumps(rep.rset)
+        extra = data|data['query']|dict(tag=rep.tag, rjson=rjson)
+        replog.info('%(code)s', dict(code=rep.code), extra=extra)
         data |= self.resolver.report(table=self.opts.table)
         self.reports.append(dict(data))
 
