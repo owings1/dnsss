@@ -72,22 +72,22 @@ def valnnf(value: float) -> NonNegativeFloat:
 
 class BaseModel(pydantic.BaseModel):
 
-    def generic_ordering(self, other: Self, comparator: Callable[[Self, Self], bool]):
+    def generic_ordering(self, other: Self, comparator: Callable[[Self, Self], bool]) -> bool:
         attr = self.model_config.get('ordering_attribute')
         if attr and type(self) is type(other):
             return comparator(getattr(self, attr), getattr(other, attr))
         return NotImplemented
 
-    def __lt__(self, other: Self):
+    def __lt__(self, other: Self) -> bool:
         return self.generic_ordering(other, operator.lt)
 
-    def __gt__(self, other: Self):
+    def __gt__(self, other: Self) -> bool:
         return self.generic_ordering(other, operator.gt)
 
-    def __lte__(self, other: Self):
+    def __lte__(self, other: Self) -> bool:
         return self.generic_ordering(other, operator.le)
 
-    def __gte__(self, other: Self):
+    def __gte__(self, other: Self) -> bool:
         return self.generic_ordering(other, operator.ge)
 
 class DataModel(BaseModel):
@@ -124,9 +124,9 @@ class Question(DataModel):
 
 class Response(DataModel):
     "DNS response info"
-    S: Server
+    server: Server
     "The server that responded"
-    R: NonNegativeFloat
+    rtime: NonNegativeFloat
     "The response time"
     q: Question
     "The DNS question"
@@ -229,14 +229,14 @@ class DomainRule(DataModel):
         return re.compile(ors.join((r'^(.+\.)?(', r')\.?$')), re.I)
 
 class Anomaly(DataModel):
-    'Anomaaly parameters'
+    'Anomaly parameters'
     limit: NonNegativeInt|None = None
     'Number of total resolver queries to apply this anomaly'
     delayers: list[Delayer] = Field(default_factory=list)
     'List of delay configs'
 
 class Delayer(DataModel):
-    'Anomaaly delayer parameters'
+    'Anomaly delayer parameters'
     pattern: Annotated[str, AfterValidator(lambda x: re.compile(x) and x)]
     'Server match pattern'
     delay: NonNegativeFloat = 0.0

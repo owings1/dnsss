@@ -9,8 +9,6 @@ from itertools import chain, islice
 from types import MappingProxyType as MapProxy
 from typing import Annotated, Any, Callable, Iterable, Mapping
 
-import dns.resolver
-
 from ..models import *
 from ..utils import *
 
@@ -20,6 +18,7 @@ type ResolveFunc = Callable[[Question, NonNegativeFloat, bool], ResolveFuncRet]
 __all__ = ()
 
 class Params(DataModel):
+    'Algorithm-specific parameters'
     pass
 
 class Config(DataModel):
@@ -27,7 +26,7 @@ class Config(DataModel):
         min_length=1,
         frozen=True,
         validate_default=True,
-        default_factory=lambda: dns.resolver.get_default_resolver().nameservers)
+        default_factory=lambda: default_nameservers())
     'Default server addresses'
     rules: Annotated[
         tuple[DomainRule, ...],
@@ -44,7 +43,7 @@ class Config(DataModel):
     tcp: bool = False
     'Whether to use TCP'
     params: Params = Field(default_factory=Params, frozen=True)
-    'Algorithm-specific parameters'
+    'Reference to the algorithm params'
 
 class State(RunningMean):
     SM: Annotated[
@@ -55,20 +54,20 @@ class State(RunningMean):
     'Reference to the algorithm params'
     model_config = ConfigDict(sfields=['SM'])
 
-    def add(self, S: Server) -> None:
+    def add(self, server: Server) -> None:
         'Initialize server state'
-        if S not in self.SM:
-            self.SM[S] = RunningMean()
+        if server not in self.SM:
+            self.SM[server] = RunningMean()
 
-    def observe(self, S: Server, R: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
+    def observe(self, server: Server, rtime: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
         """
         Update any calculations & state as needed from the observed response
         time of a server. Subclasses should make sure to call super.
         """
-        self.SM[S].observe(R)
-        super().observe(R)
+        self.SM[server].observe(rtime)
+        super().observe(rtime)
 
-    def rank(self, S: Server) -> PositiveFloat:
+    def rank(self, server: Server) -> PositiveFloat:
         """
         Compute rank order of the server for the next query according to the
         algorithm implementation. Subclasses should override this method.
@@ -147,10 +146,10 @@ class Resolver(DataModel):
             servers = self.state.ranked(servers)
             if not servers:
                 raise ValueError(f'No servers {q=}')
-            for S in servers:
+            for server in servers:
                 # Apply any delay anomalies
                 for delayer in self.delayers:
-                    if re.match(delayer.pattern, S):
+                    if re.match(delayer.pattern, server):
                         delay = delayer.delay
                         break
                 else:
@@ -158,33 +157,33 @@ class Resolver(DataModel):
                 # Compute the timeout to send to the backend
                 lifetime = max(
                     self.config.timeout_min,
-                    min(self.config.timeout_max, self.lifetime(S, q)))
+                    min(self.config.timeout_max, self.lifetime(server, q)))
                 delay = valnnf(min(delay, lifetime))
                 lifetime -= delay
                 # Get the response from the backend
-                backend = resolve_backend(S)
+                backend = resolve_backend(server)
                 t = time.monotonic() - delay
-                code, rset, R = backend(q, lifetime=lifetime, tcp=self.config.tcp)
-                R += time.monotonic() - t
+                code, rset, rtime = backend(q, lifetime=lifetime, tcp=self.config.tcp)
+                rtime += time.monotonic() - t
                 # Report the response time & result
-                self.state.observe(S, R, code, servers)
+                self.state.observe(server, rtime, code, servers)
                 if code != 'TIMEOUT' or len(failed) >= self.config.retries_max:
                     # A successful response, or max retries reached with TIMEOUT
                     break
-                failed.append(S)
+                failed.append(server)
             else:
                 continue
             break
         return Response(
-            S=S,
-            R=R,
+            server=server,
+            rtime=rtime,
             q=q,
             code=code,
             rset=rset,
             tag=tag,
             failed=failed or None)
 
-    def report(self, *, table: bool|str = False, **kw) -> dict[str, Any]:
+    def report(self, *, table: bool = False, **kw) -> dict[str, Any]:
         "Formatted data for display & logging"
         groups = self.servergroups
         state = self.state.report(**kw)
@@ -211,7 +210,7 @@ class Resolver(DataModel):
             lines = tablestr(
                 chain.from_iterable(servers.values()),
                 headers='keys',
-                tablefmt=table).splitlines()
+                tablefmt='simple').splitlines()
             # Grab the header so we can repeat it
             end = len(lines) - sum(map(len, servers.values()))
             headers = lines[:end]
@@ -249,6 +248,10 @@ class Resolver(DataModel):
             for server in rule.servers:
                 self.state.add(server)
 
+def default_nameservers() -> list[Server]:
+    import dns.resolver
+    return list(dns.resolver.get_default_resolver().nameservers)
+
 @functools.cache
 def resolve_backend(server: Server) -> ResolveFunc:
     'Create the backend resolve function for the server'
@@ -262,6 +265,7 @@ def resolve_backend(server: Server) -> ResolveFunc:
 
 def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
     "Make a backend resolve function for a server/port using dnspython"
+    import dns.resolver
     backend = dns.resolver.make_resolver_at(where, int(port))
     def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
         rset = []
@@ -273,6 +277,8 @@ def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
                 tcp=tcp)
         except dns.resolver.NXDOMAIN:
             code = 'NXDOMAIN'
+        except dns.resolver.NoNameservers:
+            code = 'SERVFAIL'
         except dns.resolver.LifetimeTimeout:
             code = 'TIMEOUT'
         else:
@@ -288,12 +294,12 @@ def _mock_backend(**opts) -> ResolveFunc:
     mock = MockServer.model_validate(opts)
     def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
         d = random.uniform(0, mock.v)
-        R = mock.r * (1 + d)
+        rtime = mock.r * (1 + d)
         rset = []
-        if R >= lifetime:
+        if rtime >= lifetime:
             code = 'TIMEOUT'
-            R = lifetime
+            rtime = lifetime
         else:
             code = 'NOERROR'
-        return code, rset, valnnf(R)
+        return code, rset, valnnf(rtime)
     return resolve

@@ -28,8 +28,8 @@ replog = logging.getLogger(f'dnsss.server.response')
 class BaseHandler(socketserver.BaseRequestHandler):
     proto: Literal['TCP', 'UDP']
     resolver: ResolverType
-    reports: deque
-    opts: ServeOptions
+    reports: deque = deque(maxlen=0)
+    table: bool|str = True
 
     def setup(self) -> None:
         self.response = None
@@ -50,11 +50,11 @@ class BaseHandler(socketserver.BaseRequestHandler):
                 qname=str(request.q.qname),
                 rdtype=QTYPE[request.q.qtype]))
             if rep.code == 'NOERROR':
-                reply.add_answer(*map(self.buildrr, rep.rset))
+                reply.add_answer(*filter(None, map(self.buildrr, rep.rset)))
             else:
                 reply.header.rcode = getattr(RCODE, rep.code, RCODE.SERVFAIL)
         except:
-            logger.exception(f'{request=} response={rep}')
+            logger.exception(f'{request=} response={self.response}')
             reply.header.rcode = RCODE.SERVFAIL
         return reply
 
@@ -69,16 +69,19 @@ class BaseHandler(socketserver.BaseRequestHandler):
             rjson = json.dumps(rep.rset)
             extra = data|data['query']|dict(tag=rep.tag, rjson=rjson)
             replog.info('%(code)s', dict(code=rep.code), extra=extra)
-            data |= self.resolver.report(table=self.opts.table)
+            data |= self.resolver.report(table=self.table)
             self.reports.append(dict(data))
         except Exception as err:
             logger.exception(f'{err!r}')
 
     @staticmethod
-    def buildrr(rstr: str) -> RR:
+    def buildrr(rstr: str) -> RR|None:
         rname, ttl, rclass, rtype, rdata = rstr.split(maxsplit=4)
         if rtype == 'HTTPS':
             rdata = HTTPS.fromZone(rdata.split())
+        elif rtype == 'SVCB':
+            logger.warning(f'{rtype} Not Implemented ({rstr=})')
+            return
         else:
             rdata = RDMAP[rtype](rdata)
         return RR(
@@ -140,7 +143,7 @@ class TCPHandler(BaseHandler):
 class ServerMixin: 
     BaseHandler: type[BaseHandler]
 
-    def __init__(self, opts: ServeOptions, ns: dict, **kw) -> None:
+    def __init__(self, opts: ServerOptions, ns: dict, **kw) -> None:
         self.address_family = opts.address_family
         Handler = type(self.BaseHandler.__name__, (self.BaseHandler,), ns)
         super().__init__((str(opts.address), opts.port), Handler, **kw)
@@ -151,7 +154,7 @@ class TCPServer(ServerMixin, socketserver.ThreadingTCPServer):
 class UDPServer(ServerMixin, socketserver.ThreadingUDPServer):
     BaseHandler = UDPHandler
 
-class ServeOptions(CommonOptions):
+class ServerOptions(CommonOptions):
     address: IPvAnyAddress = IPvAnyAddress(settings.LISTEN_ADDRESS)
     port: Port = settings.LISTEN_PORT
     replog: Path|None = None
@@ -162,8 +165,8 @@ class ServeOptions(CommonOptions):
             return socket.AddressFamily.AF_INET6
         return socket.AddressFamily.AF_INET
 
-class ServeCommand(CommonCommand[ServeOptions]):
-    options_model: ClassVar = ServeOptions
+class ServerCommand(CommonCommand[ServerOptions]):
+    options_model: ClassVar = ServerOptions
 
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:
@@ -180,7 +183,7 @@ class ServeCommand(CommonCommand[ServeOptions]):
         # changes on reload() when a new instance is created
         def resolver(_):
             return self.resolver
-        ns = dict(resolver=property(resolver), reports=self.reports, opts=self.opts)
+        ns = dict(resolver=property(resolver), reports=self.reports, table=self.opts.table)
         self.servers = (UDPServer(self.opts, ns), TCPServer(self.opts, ns))
         if self.opts.replog:
             hdler: logging.FileHandler = replog.handlers[0]
@@ -219,4 +222,4 @@ class ServeCommand(CommonCommand[ServeOptions]):
         time.sleep(settings.SERVER_SLEEP_DELAY)
 
 if __name__ == '__main__':
-    ServeCommand.main()
+    ServerCommand.main()

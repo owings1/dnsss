@@ -1,3 +1,3 @@
 if __name__ == '__main__':
-    from .cli import DevCommand
-    DevCommand.main()
+    from .cli import ClientCommand
+    ClientCommand.main()

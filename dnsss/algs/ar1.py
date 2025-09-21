@@ -69,7 +69,7 @@ class ARStats(RunningVariance):
         ordering_attribute='P',
         terse_exclude=['mean_v2', 'mean_xy', 'delta_m2', 'variance'])
 
-    def observe(self, value: NonNegativeFloat) -> None:
+    def observe(self, rtime: NonNegativeFloat) -> None:
         params = self.params
         if self.count:
             # Deviation reset counter
@@ -78,7 +78,7 @@ class ARStats(RunningVariance):
             > response times from the mean response times, then we restart
             > the complete estimation. (p. 4)
             """
-            if abs(value - self.mean) > self.stdev * params.drc_stdev_co:
+            if abs(rtime - self.mean) > self.stdev * params.drc_stdev_co:
                 self.drc += 1
             else:
                 self.drc = 0
@@ -102,10 +102,10 @@ class ARStats(RunningVariance):
                 # our measured stdev stable (drc_count_min).
                 self.count >= params.drc_count_min):
                     self.reset()
-        super().observe(value)
-        self.mean_v2 += (value**2 - self.mean_v2) / self.count
+        super().observe(rtime)
+        self.mean_v2 += (rtime**2 - self.mean_v2) / self.count
         if self.count > 1:
-            self.mean_xy += (self.latest * value) / (self.count - 1)
+            self.mean_xy += (self.latest * rtime) / (self.count - 1)
             # Calculate alpha. Formula (5) from the text (p. 4) reads:
             """
                             E[X(q) * X(q - 1)] - E[X**2]
@@ -127,7 +127,7 @@ class ARStats(RunningVariance):
             > we always ensure that alpha is between 0.1 and 0.9. (p. 4)
             """
             self.alpha = max(params.alpha_min, min(params.alpha_max, self.alpha))
-        self.latest = value
+        self.latest = rtime
         # Clear the idle count
         self.idle = 0
 
@@ -154,21 +154,21 @@ class State(bind.State):
     params: Params = Field(default_factory=Params, exclude=True)
     model_config = ConfigDict(sfields=['SAR', 'SM', 'SR'])
 
-    def add(self, S: Server) -> None:
-        super().add(S)
-        if S in self.SAR:
-            self.SAR[S].params = self.params
+    def add(self, server: Server) -> None:
+        super().add(server)
+        if server in self.SAR:
+            self.SAR[server].params = self.params
         else:
-            self.SAR[S] = ARStats(params=self.params)
-            self.SAR[S].reset()
+            self.SAR[server] = ARStats(params=self.params)
+            self.SAR[server].reset()
 
-    def observe(self, S: Server, R: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
-        super().observe(S, R, code, servers)
+    def observe(self, server: Server, rtime: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
+        super().observe(server, rtime, code, servers)
         for Si in servers:
             ARi = self.SAR[Si]
-            if Si == S:
+            if Si == server:
                 # Update the ARStats of the queried server
-                ARi.observe(R)
+                ARi.observe(rtime)
             else:
                 # Increment the idle count for all the other servers
                 ARi.idle += 1
@@ -176,15 +176,15 @@ class State(bind.State):
                 # Compute the AR prediction for every server
                 ARi.predict()
 
-    def rank(self, S: Server) -> float:
-        AR = self.SAR[S]
+    def rank(self, server: Server) -> float:
+        AR = self.SAR[server]
         return (
             # For idle servers, rank idlest first.
             AR.idle > self.params.idle_max and -float(AR.idle) or
             # Rank based on AR prediction if available.
             AR.P or
             # Fall back to BIND algorithm.
-            super().rank(S))
+            super().rank(server))
 
     def load(self, data: Any) -> None:
         super().load(data)

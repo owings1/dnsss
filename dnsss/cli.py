@@ -84,7 +84,8 @@ class OutFormat(enum.StrEnum):
 
 class CommonOptions(CommandOptions):
     algorithm: Annotated[str, BeforeValidator(valalg)] = Field(
-        default=settings.DEFAULT_ALG)
+        default=settings.DEFAULT_ALG,
+        validate_default=True)
     config: Path|None = None
     output: Path = Path('state.yml')
     load: Annotated[Path|bool, BeforeValidator(lambda x: x is None or x)] = Field(
@@ -92,15 +93,14 @@ class CommonOptions(CommandOptions):
         description='Load state from file')
     save: bool = False
     format: OutFormat = OutFormat[settings.DEFAULT_FORMAT]
-    tablefmt: str = settings.DEFAULT_TABLEFMT
     quiet: bool = False
     report: Path|None = None
 
     @property
-    def table(self) -> bool|str:
-        return self.format is self.format.table and self.tablefmt
+    def table(self) -> bool:
+        return self.format is self.format.table
 
-class DevOptions(CommonOptions):
+class ClientOptions(CommonOptions):
     interval: NonNegativeFloat = 0.0
     count: NonNegativeInt = 0
 
@@ -145,6 +145,7 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
         if nsopts.config:
             # Preload the config file before we construct the command options,
             # so we can specify default command options in the config file.
+            logger.info(f'Reading config from {nsopts.config}')
             with open(nsopts.config) as file:
                 self.config: dict = yaml.safe_load(file) or {}
             self.configcwd = nsopts.config.parent
@@ -238,10 +239,8 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
         if self.opts.report:
             with self.opts.report.open('w') as out:
                 self.reportout(out, dict(*args, **kw), flush=False)
-            return
-        if self.opts.quiet:
-            return
-        self.reportout(self.stdout, dict(*args, **kw), flush=True)
+        elif not self.opts.quiet:
+            self.reportout(self.stdout, dict(*args, **kw), flush=True)
 
     def reportusr(self, *args, **kw) -> None:
         self.reportout(self.stdout, dict(*args, **kw), flush=True)
@@ -271,9 +270,9 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
         else:
             logger.info(f'Reload succeded')
 
-class DevCommand(CommonCommand[DevOptions]):
+class ClientCommand(CommonCommand[ClientOptions]):
     prog: ClassVar = 'dnsss'
-    options_model: ClassVar = DevOptions
+    options_model: ClassVar = ClientOptions
     termerrors: ClassVar[tuple[type[Exception], ...]] = (
         EOFError,
         KeyboardInterrupt,
@@ -402,7 +401,7 @@ class KeyAction:
         '-': 'slower',
         '?': 'help'}
 
-    def __init__(self, cmd: DevCommand) -> None:
+    def __init__(self, cmd: ClientCommand) -> None:
         self.cmd = cmd
 
     def __call__(self, key: str) -> None:

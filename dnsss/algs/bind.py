@@ -44,16 +44,16 @@ class State(base.State):
     params: Params = Field(default_factory=Params, exclude=True)
     model_config = ConfigDict(sfields=['SR', 'SM'])
 
-    def add(self, S: Server) -> None:
-        super().add(S)
-        if S not in self.SR:
-            self.SR[S] = 0.0
+    def add(self, server: Server) -> None:
+        super().add(server)
+        if server not in self.SR:
+            self.SR[server] = 0.0
 
-    def observe(self, S: Server, R: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
-        super().observe(S, R, code, servers)
+    def observe(self, server: Server, rtime: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
+        super().observe(server, rtime, code, servers)
         for Si in servers:
             Ri = self.SR[Si]
-            if Si == S:
+            if Si == server:
                 # For the selected server, the new value is the weighted
                 # average of the prior value (Ri) and the measured response
                 # time (R).
@@ -62,16 +62,16 @@ class State(base.State):
                 # override (a) to 0, which will make the initial value of (R)
                 # equal to the first observed value.
                 a = Ri and self.params.a
-                r = a * Ri + (1 - a) * R
+                r = a * Ri + (1 - a) * rtime
             else:
                 # For all other servers, the value is slightly decreased by
                 # a fixed coefficient (g).
                 r = self.params.g * Ri
             self.SR[Si] = r
 
-    def rank(self, S: Server) -> float:
+    def rank(self, server: Server) -> float:
         'Rank based on least R value'
-        return self.SR[S]
+        return self.SR[server]
 
 class Config(base.Config):
     params: Params = Field(default_factory=Params, frozen=True)

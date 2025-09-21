@@ -21,18 +21,18 @@ from . import bind
 
 class State(bind.State):
     SRM: dict[Server, NonNegativeFloat] = Field(default_factory=dict)
-    model_config = ConfigDict(sfields=['SR', 'SRM', 'SM'])
+    model_config = ConfigDict(sfields=['SRM', 'SR', 'SM'])
 
-    def add(self, S: Server) -> None:
-        super().add(S)
-        if S not in self.SRM:
-            self.SRM[S] = 0.0
+    def add(self, server: Server) -> None:
+        super().add(server)
+        if server not in self.SRM:
+            self.SRM[server] = 0.0
 
-    def observe(self, S: Server, R: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
-        super().observe(S, R, code, servers)
-        a = self.SRM[S] and self.params.a
-        self.SRM[S] = a * self.SRM[S] + (1 - a) * R
-        self.SR[S] = max(self.SR[S], self.SRM[S])
+    def observe(self, server: Server, rtime: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
+        super().observe(server, rtime, code, servers)
+        a = self.SRM[server] and self.params.a
+        self.SRM[server] = a * self.SRM[server] + (1 - a) * rtime
+        self.SR[server] = max(self.SR[server], self.SRM[server])
 
 class Resolver(bind.Resolver):
     state: State = Field(default_factory=State, frozen=True)
