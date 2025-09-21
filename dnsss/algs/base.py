@@ -89,7 +89,8 @@ class State(RunningMean):
         data = self.model_dump() | self.model_validate(data).model_dump()
         other = self.model_validate(data)
         for name in data:
-            setattr(self, name, getattr(other, name))
+            if hasattr(other, name):
+                setattr(self, name, getattr(other, name))
         for Si in servers:
             self.add(Si)
 
@@ -219,9 +220,6 @@ class Resolver(DataModel):
                 start, end = end, end + len(sdatas)
                 body = islice(lines, start, end)
                 servers[tag] = LiteralStr('\n'.join(chain(headers, body)))
-        # If there is only one group, skip the unnecessary structure
-        if len(servers) == len(groups) == 1:
-            servers, = servers.values()
         state['servers'] = servers
         return dict(state=state)
 

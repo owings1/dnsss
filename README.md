@@ -9,41 +9,46 @@ DNS Server Selection algorithm demonstrations.
 
 ## Usage
 
+### Client mode
+
 Basic usage:
 
 ```sh
-python3 -m dnsss
+python3 -m dnsss client
 ```
 
-This starts in interactive mode using system resolvers and the `bind` algorithm.
+This starts in interactive client mode using system resolvers and the `AR1` algorithm.
 Press `<enter>` to execute a query, and `?` to see available commands.
+
+To run queries at an interval, you can specify the `-n` parameter, or adjust interactively
+using `+`/`-`. To run a specific number of queries and quit, use `-c`.
 
 To see all command line options, run:
 
 ```sh
-python3 -m dnsss -h
+python3 -m dnsss client -h
 ```
 
-### Examples
+### Server mode
 
-Specify config file and algorithm:
+Basic usage:
 
 ```sh
-python3 -m dnsss -f config.yml -a ar1
+python3 -m dnsss server
 ```
 
-In interactive mode, type `s` to save the state to a file `state.<alg>.yml`, e.g. `state.ar1.yml`.
+This starts in server mode listening on port 5053 TCP/UDP.
 
-You can specify a different filename with `-o output.yml`.
+To specify a different port, use the `-p` option. By default the server binds to localhost (127.0.0.1).
+To bind to another address, use the `-b` option.
 
-To save the file automatically, provide the `-s` flag.
+To reload the configuration, send `SIGHUP` signal.
 
-To load the state file, specify the `-l` parameter.
+To see all command line options, run:
 
-To load from one file and save to another, you can do `-l load.yml -o output.yml`.
-
-To run queries at an interval, you can specify the `-n` parameter, or adjust interactively
-using `+`/`-`. To run a specific number of queries and quit, use `-c`.
+```sh
+python3 -m dnsss server -h
+```
 
 ## Config File
 
@@ -78,6 +83,8 @@ rules:
 
 ### `questions`
 
+Applicable to client mode only.
+
 A list of DNS questions or references to files from which to load them. Example:
 
 ```yaml
@@ -101,7 +108,7 @@ supported data. Extra/unknown keys are ignored. Example:
 params:
   # See bind resolver
   g: 0.98
-  # See ar1 resolver
+  # See AR1 resolver
   alpha_min: 0.1
   alpha_max: 0.9
 ```
@@ -148,7 +155,8 @@ timeout_min: 1.0
 retries_max: 3
 # Whether to use TCP for DNS queries
 tcp: false
-# Some CLI options can be set as defaults
+# Many CLI options can be set in the options section. Arguments passed on the
+# command line take precedence over config file values.
 options:
   algorithm: AR1
   # ...

@@ -6,21 +6,20 @@ import os
 import socket
 import socketserver
 import struct
-import time
 from abc import abstractmethod
-from argparse import ArgumentParser
-from collections import deque
-from pathlib import Path
 from threading import Thread
-from typing import ClassVar, Literal
+from collections import deque
+from typing import TYPE_CHECKING, Literal
 
 from dnslib import (CLASS, HTTPS, QTYPE, RCODE, RDMAP, RR, DNSHeader, DNSLabel,
                     DNSRecord)
 
 from . import settings
 from .algs import ResolverType
-from .cli import CommonCommand, CommonOptions
 from .models import *
+
+if TYPE_CHECKING:
+    from .cli import ServerOptions
 
 logger = logging.getLogger(f'dnsss.server')
 replog = logging.getLogger(f'dnsss.server.response')
@@ -154,72 +153,32 @@ class TCPServer(ServerMixin, socketserver.ThreadingTCPServer):
 class UDPServer(ServerMixin, socketserver.ThreadingUDPServer):
     BaseHandler = UDPHandler
 
-class ServerOptions(CommonOptions):
-    address: IPvAnyAddress = IPvAnyAddress(settings.LISTEN_ADDRESS)
-    port: Port = settings.LISTEN_PORT
-    replog: Path|None = None
+class DualServer:
 
-    @property
-    def address_family(self) -> socket.AddressFamily:
-        if self.address.version == 6:
-            return socket.AddressFamily.AF_INET6
-        return socket.AddressFamily.AF_INET
+    def __init__(self, opts: ServerOptions, ns: dict) -> None:
+        self.opts = opts
+        self.servers = (
+            UDPServer(self.opts, ns),
+            TCPServer(self.opts, ns))
 
-class ServerCommand(CommonCommand[ServerOptions]):
-    options_model: ClassVar = ServerOptions
-
-    @classmethod
-    def add_arguments(cls, parser: ArgumentParser) -> None:
-        super().add_arguments(parser)
-        arg = parser.add_argument
-        arg('--port', '-p')
-        arg('--address', '-b')
-        arg('--replog')
-
-    def setup(self) -> None:
-        super().setup()
-        self.reports = deque()
-        # Make resolver a property for the Handler class, since the reference
-        # changes on reload() when a new instance is created
-        def resolver(_):
-            return self.resolver
-        ns = dict(resolver=property(resolver), reports=self.reports, table=self.opts.table)
-        self.servers = (UDPServer(self.opts, ns), TCPServer(self.opts, ns))
-        if self.opts.replog:
-            hdler: logging.FileHandler = replog.handlers[0]
-            hdler.baseFilename = str(self.opts.replog)
-            hdler.setLevel(logging.INFO)
-
-    def run(self) -> None:
+    def start(self) -> None:
         logger.info(f'PID: {os.getpid()}')
-        threads = [
+        self.threads = [
             Thread(
                 target=server.serve_forever,
                 name=type(server).__name__,
                 daemon=True)
             for server in self.servers]
         listenaddr = f'{self.opts.address}:{self.opts.port}'
-        for thread in threads:
+        for thread in self.threads:
             logger.info(f'Starting {thread.name} listening on {listenaddr}')
             thread.start()
-        try:
-            while True:
-                self.loop()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            for thread, server in zip(threads, self.servers):
-                logger.info(f'Stopping {thread.name}')
-                server.shutdown()
 
-    def loop(self) -> None:
-        if self.reports:
-            # Only print the latest
-            self.report(self.reports.pop())
-            self.reports.clear()
-            if self.opts.save:
-                self.save()
-        time.sleep(settings.SERVER_SLEEP_DELAY)
+    def shutdown(self) -> None:
+        for thread, server in zip(self.threads, self.servers):
+            logger.info(f'Stopping {thread.name}')
+            server.shutdown()
 
 if __name__ == '__main__':
+    from .cli import ServerCommand
     ServerCommand.main()
