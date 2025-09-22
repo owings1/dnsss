@@ -33,6 +33,7 @@ class ServerOptions(CommonOptions):
 class ServerCommand(CommonCommand[ServerOptions]):
     options_model: ClassVar = ServerOptions
     logger: ClassVar = logging.getLogger(f'dnsss.server')
+    fileable: ClassVar = ['address', 'port', 'replog']
 
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:

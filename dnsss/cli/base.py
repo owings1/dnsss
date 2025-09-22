@@ -165,6 +165,7 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
     options_model: ClassVar = CommonOptions
     logger: ClassVar = logging.getLogger('dnsss')
     reloadable: ClassVar = ['algorithm', 'output', 'save', 'report', 'format', 'quiet']
+    fileable: ClassVar = []
 
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:
@@ -198,7 +199,7 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
         self.implicits = (
             self.options_model.model_validate(
                 self.config.get('options') or {})
-            .model_dump(include=self.reloadable))
+            .model_dump(include=self.reloadable + self.fileable))
         # Options passed on the command line take precedence
         UNSET = (None, False, ...)
         self.explicits = {
