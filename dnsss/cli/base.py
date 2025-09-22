@@ -165,7 +165,7 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
     options_model: ClassVar = CommonOptions
     logger: ClassVar = logging.getLogger('dnsss')
     reloadable: ClassVar = ['algorithm', 'output', 'save', 'report', 'format', 'quiet']
-    fileable: ClassVar = []
+    fileable: ClassVar = ['load']
 
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:
