@@ -3,6 +3,7 @@
 !*/**/*.yml
 *.dns
 *.log
+*.log.*
 *.questions.*
 *.yml
 **/__pycache__

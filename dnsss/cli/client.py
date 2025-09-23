@@ -34,6 +34,7 @@ class ClientOptions(CommonOptions):
 class ClientCommand(CommonCommand[ClientOptions]):
     logger: ClassVar = logging.getLogger(f'dnsss.client')
     options_model: ClassVar = ClientOptions
+    reloadable: ClassVar = CommonCommand.reloadable + ['interval', 'count']
     termerrors: ClassVar[tuple[type[Exception], ...]] = (
         EOFError,
         KeyboardInterrupt,
@@ -55,11 +56,11 @@ class ClientCommand(CommonCommand[ClientOptions]):
         self.tcorgattr = (
             self.stdin.isatty() and
             termios.tcgetattr(self.stdin.fileno()))
-        self.questions = self.configquestions(self.config)
+        self.questions = self.config_questions(self.config)
 
     def reload(self) -> None:
         super().reload()
-        self.questions = self.configquestions(self.config)
+        self.questions = self.config_questions(self.config)
 
     def run(self) -> None:
         with self.ttycontext():
@@ -94,7 +95,7 @@ class ClientCommand(CommonCommand[ClientOptions]):
             if self.anomaly:
                 if self.anomaly.limit is not None:
                     self.anomaly.limit -= 1
-                report.update(anomaly=self.anomaly.model_dump())
+                report.update(anomaly=self.anomaly.report())
             report |= self.resolver.report(table=self.opts.table)
             self.report(report)
         finally:
@@ -127,7 +128,7 @@ class ClientCommand(CommonCommand[ClientOptions]):
         finally:
             termios.tcsetattr(fdin, when, tcattr)
 
-    def configquestions(self, config: dict) -> list[Question]:
+    def config_questions(self, config: dict) -> list[Question]:
         qentries = config.get('questions') or [settings.DEFAULT_QNAME]
         return list(resolve_questions(qentries, self.configcwd))
 
@@ -176,8 +177,8 @@ class KeyAction:
         cmd = self.cmd
         opt = self.input('Set interval')
         try:
-            interval = valnnf(opt or cmd.opts.interval)
-        except ValidationError as err:
+            interval = float(opt or cmd.opts.interval)
+        except ValueError as err:
             cmd.reportusr(error=str(err))
         else:
             if interval:

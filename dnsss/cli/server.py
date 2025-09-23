@@ -61,15 +61,19 @@ class ServerCommand(CommonCommand[ServerOptions]):
             reports=self.reports,
             table=property(table))
         if self.opts.replog:
-            replog = logging.getLogger(f'dnsss.server.response')
-            handler: logging.FileHandler = replog.handlers[0]
-            handler.baseFilename = str(self.opts.replog)
+            from logging.handlers import RotatingFileHandler
+            handler = RotatingFileHandler(
+                filename=self.opts.replog,
+                delay=True,
+                maxBytes=settings.REPLOG_MAXBYTES,
+                backupCount=settings.REPLOG_KEEPCOUNT)
+            handler.formatter = server.replog.handlers[0].formatter
             handler.setLevel(logging.INFO)
+            server.replog.addHandler(handler)
         self.server = server.DualServer(self.opts, ns)
+        signal.signal(signal.SIGQUIT, self.SIGQUIT)
 
     def run(self) -> None:
-        self.prep_anomaly()
-        signal.signal(signal.SIGQUIT, self.SIGQUIT)
         self.server.start()
         try:
             while not self.quit:
@@ -86,7 +90,7 @@ class ServerCommand(CommonCommand[ServerOptions]):
             if self.anomaly:
                 if self.anomaly.limit is not None:
                     self.anomaly.limit -= 1 + len(self.reports)
-                report.update(anomaly=self.anomaly.model_dump())
+                report.update(anomaly=self.anomaly.report())
             self.report(report)
             self.reports.clear()
             if self.opts.save:

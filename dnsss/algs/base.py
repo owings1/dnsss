@@ -115,7 +115,7 @@ class Resolver(DataModel):
     delayers: list[Delayer] = Field(default_factory=list)
     'For injecting latency simulations at runtime'
 
-    def select(self, q: Question) -> tuple[list[Server], str]:
+    def select(self, q: Question) -> tuple[list[Server], ServersTag]:
         """
         Returns all applicable servers for a question based on forwarding rules
         """
@@ -159,7 +159,7 @@ class Resolver(DataModel):
                 lifetime = max(
                     self.config.timeout_min,
                     min(self.config.timeout_max, self.lifetime(server, q)))
-                delay = valnnf(min(delay, lifetime))
+                delay = min(delay, lifetime)
                 lifetime -= delay
                 # Get the response from the backend
                 backend = resolve_backend(server)
@@ -299,5 +299,5 @@ def _mock_backend(**opts) -> ResolveFunc:
             rtime = lifetime
         else:
             code = 'NOERROR'
-        return code, rset, valnnf(rtime)
+        return code, rset, rtime
     return resolve

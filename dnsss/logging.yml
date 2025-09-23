@@ -12,9 +12,7 @@ handlers:
     stream: ext://sys.stderr
   response:
     formatter: response
-    class: logging.FileHandler
-    delay: yes
-    filename: /dev/null
+    class: logging.NullHandler
     level: ERROR
 loggers:
   dnsss:

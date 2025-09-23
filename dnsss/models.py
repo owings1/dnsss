@@ -1,26 +1,25 @@
 from __future__ import annotations
 
+import enum
 import ipaddress
 import math
 import operator
 import re
 from functools import cached_property
-from typing import Annotated, Any, Callable, Literal, Self
+from typing import Annotated, Any, Callable, Self
 
 import pydantic
 from annotated_types import Lt
 from pydantic import (AfterValidator, BeforeValidator, ConfigDict, Field,
-                      IPvAnyAddress, NegativeInt, NonNegativeFloat,
-                      NonNegativeInt, PlainSerializer, PositiveFloat,
-                      PositiveInt, SerializationInfo,
-                      SerializerFunctionWrapHandler, TypeAdapter,
-                      ValidationError, field_serializer, model_serializer,
-                      model_validator)
+                      FieldSerializationInfo, IPvAnyAddress, NegativeInt,
+                      NonNegativeFloat, NonNegativeInt, PlainSerializer,
+                      PositiveFloat, PositiveInt, SerializationInfo,
+                      SerializerFunctionWrapHandler, field_serializer,
+                      model_serializer, model_validator)
 
 __all__ = [
     'AfterValidator',
     'Anomaly',
-    'IPvAnyAddress',
     'BaseModel',
     'BeforeValidator',
     'ConfigDict',
@@ -28,10 +27,8 @@ __all__ = [
     'Delayer',
     'DomainRule',
     'Field',
-    'field_serializer',
+    'IPvAnyAddress',
     'MockServer',
-    'model_serializer',
-    'model_validator',
     'NonNegativeFloat',
     'NonNegativeInt',
     'PlainSerializer',
@@ -45,30 +42,40 @@ __all__ = [
     'Rset',
     'RunningMean',
     'RunningVariance',
-    'SerializationInfo',
-    'SerializerFunctionWrapHandler',
     'Server',
-    'ValidationError',
-    'valnnf']
+    'ServersTag']
 
 type Server = str
 type Rcode = str
 type Rset = list[str]
-type RdType = Annotated[
-    Literal['A', 'AAAA', 'CNAME', 'HTTPS', 'PTR', 'NS', 'TXT', 'MX', 'SOA', 'SRV', 'SVCB'],
-    BeforeValidator(str.upper)]
 type Domain = Annotated[
     str,
     AfterValidator(lambda x: x.strip('.').lower())]
 type Port = Annotated[
     PositiveInt,
     Lt(65_536)]
+type ServersTag = Annotated[
+    str,
+    Field(pattern=r'^[a-zA-Z\d_.-]+$')]
 
-NonNegFloatTa = TypeAdapter(NonNegativeFloat)
+class StrUpperEnum(enum.StrEnum):
 
-def valnnf(value: float) -> NonNegativeFloat:
-    'Validate a NonNegativeFloat'
-    return NonNegFloatTa.validate_python(value)
+    @classmethod
+    def _missing_(cls, value: Any) -> Self:
+        return cls(str(value).upper())
+
+class RdType(StrUpperEnum):
+    A = 'A'
+    AAAA = 'AAAA'
+    CNAME = 'CNAME'
+    HTTPS = 'HTTPS'
+    MX = 'MX'
+    NS = 'NS'
+    PTR = 'PTR'
+    SOA = 'SOA'
+    SRV = 'SRV'
+    SVCB = 'SVCB'
+    TXT = 'TXT'
 
 class BaseModel(pydantic.BaseModel):
 
@@ -94,6 +101,7 @@ class DataModel(BaseModel):
 
     def report(self, **kw) -> dict[str, Any]:
         kw.setdefault('context', {}).update(terse=True)
+        kw.setdefault('exclude_none', True)
         return self.model_dump(**kw)
 
     @model_serializer(mode='wrap')
@@ -108,12 +116,12 @@ class Question(DataModel):
     "DNS question info"
     qname: str
     "The question name (domain)"
-    rdtype: RdType = 'A'
+    rdtype: RdType = RdType.A
     "The record type requested"
 
     @model_validator(mode='after')
     def autoreverse(self) -> Self:
-        if self.rdtype == 'PTR' and 'arpa' not in self.qname.lower():
+        if self.rdtype is RdType.PTR and 'arpa' not in self.qname.lower():
             try:
                 ip = ipaddress.ip_address(self.qname)
             except ValueError:
@@ -134,17 +142,19 @@ class Response(DataModel):
     "The response code (NOERROR, NXDOMAIN, TIMEOUT, etc.)"
     rset: Rset
     "The records returned"
-    tag: str|None = None
+    tag: ServersTag|None = None
     "The server group or rule tag name, for logging"
     failed: list[Server]|None = None
     "A list of servers that were tried & failed (TIMEOUT), if any"
 
-    def report(self, **kw) -> dict[str, Any]:
-        "Compact display data"
-        kw.update(exclude_none=True)
-        return super().report(**kw)|dict(
-            q=f'{self.q.rdtype} {self.q.qname}',
-            rset=len(self.rset))
+    @field_serializer('q', 'rset', mode='wrap')
+    def terse_fields(self, value: Any, nxt: SerializerFunctionWrapHandler, info: FieldSerializationInfo):
+        if info.context and info.context.get('terse'):
+            if isinstance(value, Question):
+                return f'{value.rdtype} {value.qname}'
+            if isinstance(value, list):
+                return len(value)
+        return nxt(value)
 
 class RunningMean(DataModel):
     """
@@ -199,7 +209,7 @@ class DomainRule(DataModel):
     "Subdomains to exclude"
     servers: tuple[Server, ...] = Field(min_length=1, frozen=True)
     "Non-empty list of servers"
-    tag: str|None = None
+    tag: ServersTag|None = None
     "Optional tag name of the servers group for logging"
     model_config = ConfigDict(ordering_attribute='order')
 

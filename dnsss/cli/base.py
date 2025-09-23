@@ -33,11 +33,11 @@ def valalg(alg: str) -> str:
     alg = alg.lower()
     if alg in registry:
         return alg
-    raise ValidationError('Invalid algorithm')
+    raise ValueError('Invalid algorithm')
 
 class CommonOptions(CommandOptions):
     algorithm: Annotated[str, BeforeValidator(valalg)] = Field(
-        default=settings.DEFAULT_ALG,
+        default=settings.DEFAULT_ALGORITHM,
         validate_default=True,
         description='Resolver algorithm')
     config: Path|None = Field(
@@ -66,19 +66,9 @@ class CommonOptions(CommandOptions):
     def table(self) -> bool:
         return self.format is self.format.table
 
-class BaseCommand[O: CommandOptions]:
+class BaseCommand:
     prog: ClassVar[str|None] = None
     description: ClassVar[str|None] = None
-    options_model: ClassVar[type[O]] = CommandOptions
-    commands: ClassVar[dict[str, type[BaseCommand]]] = {}
-    command_metavar: ClassVar[str] = 'command'
-    command_opt: ClassVar[str]
-    command_name: str|None = None
-    command: BaseCommand|None = None
-
-    @classmethod
-    def add_arguments(cls, parser: ArgumentParser) -> None:
-        pass
 
     @classmethod
     def create_parser(cls) -> ArgumentParser:
@@ -90,25 +80,27 @@ class BaseCommand[O: CommandOptions]:
     def init_parser(cls, parser: ArgumentParser) -> None:
         parser.description = cls.description
         parser.prog = cls.prog or parser.prog
-        if cls.commands:
-            cls.add_commands(parser)
-        else:
-            cls.add_arguments(parser)
-            cls.extend_actions(parser)
 
     @classmethod
-    def extend_actions(cls, parser: ArgumentParser) -> None:
-        "Autofill parser actions from a options fields"
-        fields = cls.options_model.model_fields
-        for action in parser._actions:
-            if (field := fields.get(action.dest)):
-                cls.extend_action(action, field)
+    def main(cls, args: Sequence[str]|None = None) -> None:
+        parser = cls.create_parser()
+        cmd: ContainerCommand|ConcreteCommand = cls(parser, parser.parse_args(args))
+        while isinstance(cmd, ContainerCommand):
+            cmd = cmd.command
+        cmd.setup()
+        cmd.run()
+
+class ContainerCommand(BaseCommand):
+    commands: ClassVar[dict[str, type[BaseCommand]]] = {}
+    command_metavar: ClassVar[str] = 'command'
+    command_opt: ClassVar[str]
+    command_name: str
+    command: BaseCommand
 
     @classmethod
-    def extend_action(cls, action: argparse.Action, field: FieldInfo) -> None:
-        "Autofill an action from a DataModel field"
-        if not action.help and (text := field.description or field.title):
-            action.help = text
+    def init_parser(cls, parser: ArgumentParser) -> None:
+        super().init_parser(parser)
+        cls.add_commands(parser)
 
     @classmethod
     def add_commands(cls, parser: ArgumentParser) -> None:
@@ -129,39 +121,53 @@ class BaseCommand[O: CommandOptions]:
             help=', '.join(cls.commands),
             required=True)
 
-    @classmethod
-    def main(cls, args: Sequence[str]|None = None) -> None:
-        parser = cls.create_parser()
-        cmd = cls(parser, parser.parse_args(args))
-        while cmd.command:
-            cmd = cmd.command
-        cmd.setup()
-        signal.signal(signal.SIGHUP, cmd.SIGHUP)
-        cmd.run()
-
     def __init_subclass__(cls) -> None:
         cls.command_opt = f'_command_{abs(hash(cls))}'
 
     def __init__(self, parser: ArgumentParser, nsopts: Namespace) -> None:
-        if hasattr(nsopts, self.command_opt):
-            # This is a container/parent command
-            self.command_name = getattr(nsopts, self.command_opt)
-            delattr(nsopts, self.command_opt)
-            # Initialize the subcommand
-            self.command = self.commands[self.command_name](parser, nsopts)
-        else:
-            self.stdout = sys.stdout
-            self.stdin = sys.stdin
-            self.parser = parser
-            self.opts = self.options_model.model_validate(nsopts)
+        self.command_name = getattr(nsopts, self.command_opt)
+        delattr(nsopts, self.command_opt)
+        # Initialize the subcommand
+        self.command = self.commands[self.command_name](parser, nsopts)
+
+class ConcreteCommand[O: CommandOptions](BaseCommand):
+    options_model: ClassVar[type[O]] = CommandOptions
+
+    @classmethod
+    def init_parser(cls, parser: ArgumentParser) -> None:
+        super().init_parser(parser)
+        cls.add_arguments(parser)
+        cls.extend_actions(parser)
+
+    @classmethod
+    def add_arguments(cls, parser: ArgumentParser) -> None:
+        pass
+
+    @classmethod
+    def extend_actions(cls, parser: ArgumentParser) -> None:
+        "Autofill parser actions from a options fields"
+        fields = cls.options_model.model_fields
+        for action in parser._actions:
+            if (field := fields.get(action.dest)):
+                cls.extend_action(action, field)
+
+    @classmethod
+    def extend_action(cls, action: argparse.Action, field: FieldInfo) -> None:
+        "Autofill an action from a DataModel field"
+        if not action.help and (text := field.description or field.title):
+            action.help = text
+
+    def __init__(self, parser: ArgumentParser, nsopts: Namespace) -> None:
+        self.stdout = sys.stdout
+        self.stdin = sys.stdin
+        self.parser = parser
+        self.opts = self.options_model.model_validate(nsopts)
 
     def setup(self) -> None: ...
 
     def run(self) -> None: ...
 
-    def SIGHUP(self, signum, frame) -> None: ...
-
-class CommonCommand[O: CommonOptions](BaseCommand[O]):
+class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
     options_model: ClassVar = CommonOptions
     logger: ClassVar = logging.getLogger('dnsss')
     reloadable: ClassVar = ['algorithm', 'output', 'save', 'report', 'format', 'quiet']
@@ -225,7 +231,7 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
     def setup(self) -> None:
         super().setup()
         self.anomaly: Anomaly|None = None
-        self.anomalies = self.configanomalies(self.config)
+        self.anomalies = self.config_anomalies(self.config)
         self.resolver = registry[self.opts.algorithm](config=self.config)
         if self.opts.save and not self.opts.output.exists():
             # Initialize output file if save option is enabled, so if it is
@@ -241,6 +247,8 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
             with self.opts.load.open() as file:
                 state = yaml.safe_load(file) or {}
             self.resolver.state.load(state)
+        self.prep_anomaly()
+        signal.signal(signal.SIGHUP, self.SIGHUP)
 
     def reload(self) -> None:
         "Reload the config file"
@@ -263,7 +271,7 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
                 self.logger.info(f'Updating {name}')
                 setattr(opts, name, value)
         opts = self.options_model.model_validate(opts)
-        anomalies = self.configanomalies(config)
+        anomalies = self.config_anomalies(config)
         # Create new resolver
         resolver: ResolverType = registry[self.opts.algorithm](config=config)
         resolver.state.load(self.resolver.state.model_dump())
@@ -301,7 +309,7 @@ class CommonCommand[O: CommonOptions](BaseCommand[O]):
                     out.write('---\n---\n')
             out.flush()
 
-    def configanomalies(self, config: dict) -> deque[Anomaly]:
+    def config_anomalies(self, config: dict) -> deque[Anomaly]:
         return deque(
             map(Anomaly.model_validate, config.get('anomalies', [])))
 
