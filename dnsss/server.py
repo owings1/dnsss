@@ -19,7 +19,7 @@ from .algs import ResolverType
 from .models import *
 
 if TYPE_CHECKING:
-    from .cli import ServerOptions
+    from .cli.server import ServerOptions
 
 logger = logging.getLogger(f'dnsss.server')
 replog = logging.getLogger(f'dnsss.server.response')
@@ -178,7 +178,3 @@ class DualServer:
         for thread, server in zip(self.threads, self.servers):
             logger.info(f'Stopping {thread.name}')
             server.shutdown()
-
-if __name__ == '__main__':
-    from .cli import ServerCommand
-    ServerCommand.main()
