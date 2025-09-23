@@ -28,7 +28,7 @@ class BaseHandler(socketserver.BaseRequestHandler):
     proto: Literal['TCP', 'UDP']
     resolver: ResolverType
     reports: deque = deque(maxlen=0)
-    table: bool|str = True
+    table: bool = True
 
     def setup(self) -> None:
         self.response = None

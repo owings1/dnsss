@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import signal
 import socket
 import time
 from argparse import ArgumentParser
@@ -46,6 +47,7 @@ class ServerCommand(CommonCommand[ServerOptions]):
     def setup(self) -> None:
         super().setup()
         from .. import server
+        self.quit = False
         self.reports: deque[dict] = deque()
         # Make resolver a property for the Handler class, since the reference
         # changes on reload() when a new instance is created
@@ -58,18 +60,19 @@ class ServerCommand(CommonCommand[ServerOptions]):
             resolver=property(resolver),
             reports=self.reports,
             table=property(table))
-        self.server = server.DualServer(self.opts, ns)
         if self.opts.replog:
             replog = logging.getLogger(f'dnsss.server.response')
             handler: logging.FileHandler = replog.handlers[0]
             handler.baseFilename = str(self.opts.replog)
             handler.setLevel(logging.INFO)
+        self.server = server.DualServer(self.opts, ns)
 
     def run(self) -> None:
         self.prep_anomaly()
+        signal.signal(signal.SIGQUIT, self.SIGQUIT)
         self.server.start()
         try:
-            while True:
+            while not self.quit:
                 self.loop()
         except KeyboardInterrupt:
             pass
@@ -90,3 +93,8 @@ class ServerCommand(CommonCommand[ServerOptions]):
                 self.save()
             self.prep_anomaly()
         time.sleep(settings.SERVER_SLEEP_DELAY)
+
+    def SIGQUIT(self, signum, frame) -> None:
+        'SIGQUIT handler'
+        self.logger.warning(f'Received signal {signum} SIGQUIT')
+        self.quit = True
