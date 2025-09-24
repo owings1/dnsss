@@ -7,14 +7,12 @@ import socket
 import socketserver
 import struct
 from abc import abstractmethod
-from threading import Thread
 from collections import deque
+from threading import Thread
 from typing import TYPE_CHECKING, Literal
 
-from dnslib import (CLASS, HTTPS, QTYPE, RCODE, RDMAP, RR, DNSHeader, DNSLabel,
-                    DNSRecord)
+from dnslib import QTYPE, RR, DNSHeader, DNSRecord
 
-from . import settings
 from .algs import ResolverType
 from .models import *
 
@@ -45,16 +43,21 @@ class BaseHandler(socketserver.BaseRequestHandler):
         header = DNSHeader(id=request.header.id, qr=1, aa=1, ra=1)
         reply = DNSRecord(header=header, q=request.q)
         try:
-            self.response = rep = self.resolver.query(dict(
+            q = Question(
                 qname=str(request.q.qname),
-                rdtype=QTYPE[request.q.qtype]))
-            if rep.code == 'NOERROR':
-                reply.add_answer(*filter(None, map(self.buildrr, rep.rset)))
-            else:
-                reply.header.rcode = getattr(RCODE, rep.code, RCODE.SERVFAIL)
+                rdtype=QTYPE[request.q.qtype])
+            self.response = rep = self.resolver.query(q)
+            code = rep.code
+            if code is code.NOERROR:
+                if q.rdtype is RdType.SVCB:
+                    code = code.NOTIMP
+                else:
+                    for rr in rep.rset:
+                        reply.add_answer(*RR.fromZone(rr))
         except:
             logger.exception(f'{request=} response={self.response}')
-            reply.header.rcode = RCODE.SERVFAIL
+            code = Rcode.SERVFAIL
+        reply.header.rcode = int(code)
         return reply
 
     def finish(self) -> None:
@@ -72,23 +75,6 @@ class BaseHandler(socketserver.BaseRequestHandler):
             self.reports.append(dict(data))
         except Exception as err:
             logger.exception(f'{err!r}')
-
-    @staticmethod
-    def buildrr(rstr: str) -> RR|None:
-        rname, ttl, rclass, rtype, rdata = rstr.split(maxsplit=4)
-        if rtype == 'HTTPS':
-            rdata = HTTPS.fromZone(rdata.split())
-        elif rtype == 'SVCB':
-            logger.warning(f'{rtype} Not Implemented ({rstr=})')
-            return
-        else:
-            rdata = RDMAP[rtype](rdata)
-        return RR(
-            rname=DNSLabel(rname),
-            ttl=int(ttl),
-            rclass=getattr(CLASS, rclass),
-            rtype=getattr(QTYPE, rtype),
-            rdata=rdata)
 
     @abstractmethod
     def read(self) -> bytes:
@@ -108,36 +94,28 @@ class UDPHandler(BaseHandler):
     def send(self, data: bytes) -> None:
         self.request[1].sendto(data, self.client_address)
 
-class TCPHandler(BaseHandler):
-    """
-    Adapted from:
-    
-    Simple DNS server (UDP and TCP) in Python using dnslib.py
-
-    Philipp Klaus <philipp.l.klaus@web.de>
-        https://github.com/pklaus
-        https://gist.github.com/pklaus/b5a7876d4d2cf7271873
-
-    Andrei Fokau
-        https://andrei.fokau.se/
-        https://github.com/andreif
-        https://gist.github.com/andreif/6069838
-
-    Apache 2.0 License
-    http://www.apache.org/licenses/LICENSE-2.0
-    """
+class TCPHandler(socketserver.StreamRequestHandler, BaseHandler):
     proto = 'TCP'
     request: socket.socket
 
     def read(self) -> bytes:
-        data = self.request.recv(settings.TCP_BUF_SIZE).strip()
-        sz: int = struct.unpack('>H', data[:2])[0]
-        if sz != len(data) - 2:
-            raise ValueError(f'Wrong size TCP packet {sz=} ln={len(data) - 2}')
-        return data[2:]
+        data = self.rfile.read(2)
+        if len(data) != 2:
+            # struct.error: unpack requires a buffer of 2 bytes
+            raise NoisyPacket
+        size: int = struct.unpack('>H', data)[0]
+        data = self.rfile.read(size)
+        if len(data) != size:
+            raise BadPacket(f'{size=} length={len(data)}')
+        return data
 
     def send(self, data: bytes) -> None:
-        self.request.sendall(struct.pack('>H', len(data)) + data)
+        self.wfile.write(struct.pack('>H', len(data)))
+        self.wfile.write(data)
+
+    def finish(self) -> None:
+        super().finish()
+        BaseHandler.finish(self)
 
 class ServerMixin: 
     BaseHandler: type[BaseHandler]
@@ -178,3 +156,9 @@ class DualServer:
         for thread, server in zip(self.threads, self.servers):
             logger.info(f'Stopping {thread.name}')
             server.shutdown()
+
+class NoisyPacket(ValueError):
+    pass
+
+class BadPacket(ValueError):
+    pass

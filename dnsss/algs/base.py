@@ -164,14 +164,15 @@ class Resolver(DataModel):
                 # Get the response from the backend
                 backend = resolve_backend(server)
                 t = time.monotonic() - delay
-                code, rset, rtime = backend(q, lifetime=lifetime, tcp=self.config.tcp)
+                code, rset, rtime = backend(q, lifetime, self.config.tcp)
                 rtime += time.monotonic() - t
                 # Report the response time & result
                 self.state.observe(server, rtime, code, servers)
-                if code != 'TIMEOUT' or len(failed) >= self.config.retries_max:
-                    # A successful response, or max retries reached with TIMEOUT
+                if code is code.SERVFAIL and len(failed) < self.config.retries_max:
+                    failed.append(server)
+                else:
+                    # A successful response, or max retries reached with timeout
                     break
-                failed.append(server)
             else:
                 continue
             break
@@ -274,13 +275,11 @@ def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
                 lifetime=lifetime,
                 tcp=tcp)
         except dns.resolver.NXDOMAIN:
-            code = 'NXDOMAIN'
-        except dns.resolver.NoNameservers:
-            code = 'SERVFAIL'
-        except dns.resolver.LifetimeTimeout:
-            code = 'TIMEOUT'
+            code = Rcode.NXDOMAIN
+        except (dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
+            code = Rcode.SERVFAIL
         else:
-            code = rep.response.rcode().name
+            code = Rcode(rep.response.rcode().name)
             rset.extend(map(str, rep.chaining_result.cnames))
             if rep.rrset:
                 rset.extend(str(rep.rrset).splitlines())
@@ -295,9 +294,9 @@ def _mock_backend(**opts) -> ResolveFunc:
         rtime = mock.r * (1 + d)
         rset = []
         if rtime >= lifetime:
-            code = 'TIMEOUT'
+            code = Rcode.SERVFAIL
             rtime = lifetime
         else:
-            code = 'NOERROR'
+            code = Rcode.NOERROR
         return code, rset, rtime
     return resolve

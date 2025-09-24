@@ -10,6 +10,7 @@ from typing import Annotated, Any, Callable, Self
 
 import pydantic
 from annotated_types import Lt
+from dnslib import RCODE
 from pydantic import (AfterValidator, BeforeValidator, ConfigDict, Field,
                       FieldSerializationInfo, IPvAnyAddress, NegativeInt,
                       NonNegativeFloat, NonNegativeInt, PlainSerializer,
@@ -46,7 +47,6 @@ __all__ = [
     'ServersTag']
 
 type Server = str
-type Rcode = str
 type Rset = list[str]
 type Domain = Annotated[
     str,
@@ -63,6 +63,22 @@ class StrUpperEnum(enum.StrEnum):
     @classmethod
     def _missing_(cls, value: Any) -> Self:
         return cls(str(value).upper())
+
+class Rcode(enum.StrEnum):
+    FORMERR = 'FORMERR'
+    NOERROR = 'NOERROR'
+    NOTAUTH = 'NOTAUTH'
+    NOTIMP = 'NOTIMP'
+    NOTZONE = 'NOTZONE'
+    NXDOMAIN = 'NXDOMAIN'
+    NXRRSET = 'NXRRSET'
+    REFUSED = 'REFUSED'
+    SERVFAIL = 'SERVFAIL'
+    YXDOMAIN = 'YXDOMAIN'
+    YXRRSET = 'YXRRSET'
+
+    def __index__(self) -> int:
+        return getattr(RCODE, self, getattr(RCODE, self.SERVFAIL))
 
 class RdType(StrUpperEnum):
     A = 'A'
@@ -139,21 +155,23 @@ class Response(DataModel):
     q: Question
     "The DNS question"
     code: Rcode
-    "The response code (NOERROR, NXDOMAIN, TIMEOUT, etc.)"
+    "The response code (NOERROR, NXDOMAIN, SERVFAIL, etc.)"
     rset: Rset
     "The records returned"
     tag: ServersTag|None = None
     "The server group or rule tag name, for logging"
     failed: list[Server]|None = None
-    "A list of servers that were tried & failed (TIMEOUT), if any"
+    "A list of servers that were tried & failed, if any"
 
-    @field_serializer('q', 'rset', mode='wrap')
-    def terse_fields(self, value: Any, nxt: SerializerFunctionWrapHandler, info: FieldSerializationInfo):
+    @field_serializer('q', 'rset', 'code', mode='wrap')
+    def _response_fields(self, value: Any, nxt: SerializerFunctionWrapHandler, info: FieldSerializationInfo):
         if info.context and info.context.get('terse'):
             if isinstance(value, Question):
                 return f'{value.rdtype} {value.qname}'
             if isinstance(value, list):
                 return len(value)
+        if isinstance(value, Rcode):
+            return str(value)
         return nxt(value)
 
 class RunningMean(DataModel):
