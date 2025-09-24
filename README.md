@@ -162,6 +162,12 @@ options:
   # ...
 ```
 
+## License
+
+Copyright (C) 2025 Doug Owings. All rights reserved.
+
+[Apache 2.0 License][license]
+
 ## References
 
 - S. Deb, A. Srinivasan and S. Kuppili Pavan, "An improved DNS server selection algorithm for faster lookups,"
@@ -174,3 +180,5 @@ options:
 
 - "Accurately computing running variance"
   https://www.johndcook.com/blog/standard_deviation/
+
+[license]: https://www.apache.org/licenses/LICENSE-2.0.txt
