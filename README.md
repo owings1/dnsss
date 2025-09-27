@@ -181,4 +181,7 @@ Copyright (C) 2025 Doug Owings. All rights reserved.
 - "Accurately computing running variance"
   https://www.johndcook.com/blog/standard_deviation/
 
+- "DNS Response Size"
+  https://www.netmeister.org/blog/dns-size.html
+
 [license]: https://www.apache.org/licenses/LICENSE-2.0.txt

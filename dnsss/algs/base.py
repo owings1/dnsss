@@ -274,6 +274,8 @@ def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
                 raise_on_no_answer=False,
                 lifetime=lifetime,
                 tcp=tcp)
+        except dns.resolver.NoMetaqueries:
+            code = Rcode.REFUSED
         except dns.resolver.NXDOMAIN:
             code = Rcode.NXDOMAIN
         except (dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):

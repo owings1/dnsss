@@ -83,6 +83,7 @@ class Rcode(enum.StrEnum):
 class RdType(StrUpperEnum):
     A = 'A'
     AAAA = 'AAAA'
+    ANY = 'ANY'
     CNAME = 'CNAME'
     HTTPS = 'HTTPS'
     MX = 'MX'

@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import logging
 import signal
-import socket
 import time
 from argparse import ArgumentParser
-from collections import deque
 from pathlib import Path
 from typing import ClassVar
 
@@ -25,12 +23,6 @@ class ServerOptions(CommonOptions):
         default=None,
         description='Query response log file')
 
-    @property
-    def address_family(self) -> socket.AddressFamily:
-        if self.address.version == 6:
-            return socket.AddressFamily.AF_INET6
-        return socket.AddressFamily.AF_INET
-
 class ServerCommand(CommonCommand[ServerOptions]):
     options_model: ClassVar = ServerOptions
     logger: ClassVar = logging.getLogger(f'dnsss.server')
@@ -48,18 +40,6 @@ class ServerCommand(CommonCommand[ServerOptions]):
         super().setup()
         from .. import server
         self.quit = False
-        self.reports: deque[dict] = deque()
-        # Make resolver a property for the Handler class, since the reference
-        # changes on reload() when a new instance is created
-        def resolver(_):
-            return self.resolver
-        # Likewise for table option
-        def table(_):
-            return self.opts.table
-        ns = dict(
-            resolver=property(resolver),
-            reports=self.reports,
-            table=property(table))
         if self.opts.replog:
             from logging.handlers import RotatingFileHandler
             handler = RotatingFileHandler(
@@ -70,8 +50,19 @@ class ServerCommand(CommonCommand[ServerOptions]):
             handler.formatter = server.replog.handlers[0].formatter
             handler.setLevel(logging.INFO)
             server.replog.addHandler(handler)
-        self.server = server.DualServer(self.opts, ns)
+        self.server = server.DualServer(
+            address=self.opts.address,
+            port=self.opts.port,
+            resolver=self.resolver,
+            reports=True,
+            table=self.opts.table)
         signal.signal(signal.SIGQUIT, self.SIGQUIT)
+
+    def reload(self):
+        super().reload()
+        # Update reference after reload
+        self.server.resolver = self.resolver
+        self.server.table = self.opts.table
 
     def run(self) -> None:
         self.server.start()
@@ -84,15 +75,16 @@ class ServerCommand(CommonCommand[ServerOptions]):
             self.server.shutdown()
 
     def loop(self) -> None:
-        if self.reports:
+        reports = self.server.reports
+        if reports:
             # Only print the latest
-            report = self.reports.pop()
+            report = reports.pop()
             if self.anomaly:
                 if self.anomaly.limit is not None:
-                    self.anomaly.limit -= 1 + len(self.reports)
+                    self.anomaly.limit -= 1 + len(reports)
                 report.update(anomaly=self.anomaly.report())
             self.report(report)
-            self.reports.clear()
+            reports.clear()
             if self.opts.save:
                 self.save()
             self.prep_anomaly()
