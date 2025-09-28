@@ -67,7 +67,7 @@ class ARStats(RunningVariance):
     params: Params = Field(default_factory=Params, exclude=True)
     model_config = ConfigDict(
         ordering_attribute='P',
-        terse_exclude=['mean_v2', 'mean_xy', 'delta_m2', 'variance'])
+        report_exclude=['mean_v2', 'mean_xy', 'delta_m2', 'variance'])
 
     def observe(self, rtime: NonNegativeFloat) -> None:
         params = self.params
@@ -152,7 +152,7 @@ class State(bind.State):
         PlainSerializer(dvsorted)] = Field(default_factory=dict)
     "Mapping of each server to its ARStats"
     params: Params = Field(default_factory=Params, exclude=True)
-    model_config = ConfigDict(sfields=['SAR', 'SM', 'SR'])
+    model_config = ConfigDict(server_dict_fields=['SAR', 'SM', 'SR'])
 
     def add(self, server: Server) -> None:
         super().add(server)

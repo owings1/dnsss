@@ -52,7 +52,7 @@ class State(RunningMean):
     'Running means of server response times'
     params: Params = Field(default_factory=Params, exclude=True)
     'Reference to the algorithm params'
-    model_config = ConfigDict(sfields=['SM'])
+    model_config = ConfigDict(server_dict_fields=['SM'])
 
     def add(self, server: Server) -> None:
         'Initialize server state'
@@ -98,7 +98,7 @@ class State(RunningMean):
         "Formatted display data"
         data = super().report(**kw)
         servers = defaultdict(dict)
-        for field in self.model_config.get('sfields', []):
+        for field in self.model_config.get('server_dict_fields', []):
             key = str(field).removeprefix('S')
             for server, info in data.pop(field, {}).items():
                 servers[server][key] = info
@@ -248,6 +248,7 @@ class Resolver(DataModel):
                 self.state.add(server)
 
 def default_nameservers() -> list[Server]:
+    "Get the list of default system resolvers"
     import dns.resolver
     return list(dns.resolver.get_default_resolver().nameservers)
 
@@ -291,6 +292,11 @@ def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
 def _mock_backend(**opts) -> ResolveFunc:
     "Make a mock backend resolve function"
     mock = MockServer.model_validate(opts)
+    import ipaddress
+    net4 = ipaddress.ip_network('10.0.0.0/8')
+    net6 = ipaddress.ip_network('fe80::/64')
+    # <n>.size.example will return n-many A or AAAA records
+    sizepat = re.compile(r'^(\d+)\.size\.example\.$')
     def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
         d = random.uniform(0, mock.v)
         rtime = mock.r * (1 + d)
@@ -300,5 +306,18 @@ def _mock_backend(**opts) -> ResolveFunc:
             rtime = lifetime
         else:
             code = Rcode.NOERROR
+            if q.rdclass is q.rdclass.IN:
+                if q.rdtype is q.rdtype.A:
+                    it = net4.hosts()
+                elif q.rdtype is q.rdtype.AAAA:
+                    it = net6.hosts()
+                else:
+                    it = iter(())
+                if (m := sizepat.match(q.qname)):
+                    count = int(m[1])
+                else:
+                    count = 1
+                for rd in islice(it, count):
+                    rset.append(f'{q.qname} 0 {q.rdclass} {q.rdtype} {rd}')
         return code, rset, rtime
     return resolve

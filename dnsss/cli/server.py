@@ -58,7 +58,7 @@ class ServerCommand(CommonCommand[ServerOptions]):
             table=self.opts.table)
         signal.signal(signal.SIGQUIT, self.SIGQUIT)
 
-    def reload(self):
+    def reload(self) -> None:
         super().reload()
         # Update reference after reload
         self.server.resolver = self.resolver

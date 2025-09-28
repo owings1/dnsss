@@ -42,7 +42,7 @@ class State(base.State):
     eventually selected, and R increases.
     """
     params: Params = Field(default_factory=Params, exclude=True)
-    model_config = ConfigDict(sfields=['SR', 'SM'])
+    model_config = ConfigDict(server_dict_fields=['SR', 'SM'])
 
     def add(self, server: Server) -> None:
         super().add(server)

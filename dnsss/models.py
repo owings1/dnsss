@@ -38,6 +38,7 @@ __all__ = [
     'PositiveInt',
     'Question',
     'Rcode',
+    'RdClass',
     'RdType',
     'Response',
     'Rset',
@@ -64,6 +65,14 @@ class StrUpperEnum(enum.StrEnum):
     def _missing_(cls, value: Any) -> Self:
         return cls(str(value).upper())
 
+class RdClass(enum.StrEnum):
+    CH = 'CH'
+    CS = 'CS'
+    HESIOD = 'Hesiod'
+    IN = 'IN'
+    NONE = 'None'
+    STAR = '*'
+
 class Rcode(enum.StrEnum):
     FORMERR = 'FORMERR'
     NOERROR = 'NOERROR'
@@ -86,6 +95,7 @@ class RdType(StrUpperEnum):
     ANY = 'ANY'
     CNAME = 'CNAME'
     HTTPS = 'HTTPS'
+    LOC = 'LOC'
     MX = 'MX'
     NS = 'NS'
     PTR = 'PTR'
@@ -117,15 +127,15 @@ class BaseModel(pydantic.BaseModel):
 class DataModel(BaseModel):
 
     def report(self, **kw) -> dict[str, Any]:
-        kw.setdefault('context', {}).update(terse=True)
+        kw.setdefault('context', {}).update(report=True)
         kw.setdefault('exclude_none', True)
         return self.model_dump(**kw)
 
     @model_serializer(mode='wrap')
-    def terse_serializer(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> dict[str, Any]:
+    def report_serializer(self, handler: SerializerFunctionWrapHandler, info: SerializationInfo) -> dict[str, Any]:
         data: dict = handler(self)
-        if info.context and info.context.get('terse'):
-            for key in self.model_config.get('terse_exclude', ()):
+        if info.context and info.context.get('report'):
+            for key in self.model_config.get('report_exclude', ()):
                 data.pop(key, None)
         return data
 
@@ -135,6 +145,8 @@ class Question(DataModel):
     "The question name (domain)"
     rdtype: RdType = RdType.A
     "The record type requested"
+    rdclass: RdClass = RdClass.IN
+    "The query class"
 
     @model_validator(mode='after')
     def autoreverse(self) -> Self:
@@ -166,9 +178,9 @@ class Response(DataModel):
 
     @field_serializer('q', 'rset', 'code', mode='wrap')
     def _response_fields(self, value: Any, nxt: SerializerFunctionWrapHandler, info: FieldSerializationInfo):
-        if info.context and info.context.get('terse'):
+        if info.context and info.context.get('report'):
             if isinstance(value, Question):
-                return f'{value.rdtype} {value.qname}'
+                return f'{value.rdclass} {value.rdtype} {value.qname}'
             if isinstance(value, list):
                 return len(value)
         if isinstance(value, Rcode):

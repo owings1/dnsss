@@ -15,7 +15,7 @@ SELECT_TIMEOUT = max(0.0, float(getenv('SELECT_TIMEOUT', 0.01)))
 SERVER_SLEEP_DELAY = max(0.0, float(getenv('SERVER_SLEEP_DELAY', 0.1)))
 REPLOG_MAXBYTES = max(0, int(getenv('REPLOG_MAXBYTES', 0)))
 REPLOG_KEEPCOUNT = max(0, int(getenv('REPLOG_KEEPCOUNT', 0)))
-TCP_BUF_SIZE = max(1, int(getenv('SERVER_SLEEP_DELAY', 8192)))
+UDP_MAXLEN = max(503, int(getenv('UDP_MAXLEN', 9192)))
 YAML_FLOAT_PRECISION = max(1, int(getenv('YAML_FLOAT_PRECISION', 6)))
 YAML_FLOAT_FMT = f'.{YAML_FLOAT_PRECISION}f'
 

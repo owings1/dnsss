@@ -171,7 +171,9 @@ class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
     options_model: ClassVar = CommonOptions
     logger: ClassVar = logging.getLogger('dnsss')
     reloadable: ClassVar = ['algorithm', 'output', 'save', 'report', 'format', 'quiet']
+    "Options fields that can be reloaded from the config file during runtime"
     fileable: ClassVar = ['load']
+    "Options fields that can be initialized from the config file, but not reloaded"
 
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:

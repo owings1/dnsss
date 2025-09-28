@@ -21,7 +21,7 @@ from . import bind
 
 class State(bind.State):
     SRM: dict[Server, NonNegativeFloat] = Field(default_factory=dict)
-    model_config = ConfigDict(sfields=['SRM', 'SR', 'SM'])
+    model_config = ConfigDict(server_dict_fields=['SRM', 'SR', 'SM'])
 
     def add(self, server: Server) -> None:
         super().add(server)

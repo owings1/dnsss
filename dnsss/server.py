@@ -11,12 +11,15 @@ from collections import deque
 from threading import Thread
 from typing import Literal
 
-from dnslib import QTYPE, RR, DNSBuffer, DNSHeader, DNSRecord
+from dnslib import CLASS, QTYPE, RR, DNSBuffer, DNSHeader, DNSRecord
 
+from . import settings
 from .algs import ResolverType
 from .models import *
 
 __all__ = ['DualServer']
+
+type BaseServerType = socketserver.BaseServer|ServerMixin
 
 logger = logging.getLogger(f'dnsss.server')
 replog = logging.getLogger(f'dnsss.server.response')
@@ -39,9 +42,8 @@ class DualServer:
                 name=type(server).__name__,
                 daemon=True)
             for server in self.servers]
-        listenaddr = f'{self.address}:{self.port}'
         for thread in self.threads:
-            logger.info(f'Starting {thread.name} listening on {listenaddr}')
+            logger.info(f'{thread.name} listening on {self.address}:{self.port}')
             thread.start()
 
     def shutdown(self) -> None:
@@ -64,12 +66,13 @@ class DualServer:
 
 class BaseHandler(socketserver.BaseRequestHandler):
     proto: Literal['TCP', 'UDP']
-    maxlen: int
-    srvr: DualServer
+    maxlen: PositiveInt
+    'Max message length'
+    server: BaseServerType
 
     def setup(self) -> None:
         self.response = None
-        self.resolver = self.srvr.resolver
+        self.resolver = self.server.server.resolver
 
     def handle(self) -> None:
         try:
@@ -94,7 +97,8 @@ class BaseHandler(socketserver.BaseRequestHandler):
         try:
             q = Question(
                 qname=str(request.q.qname),
-                rdtype=QTYPE[request.q.qtype])
+                rdtype=QTYPE[request.q.qtype],
+                rdclass=CLASS[request.q.qclass])
             self.response = rep = self.resolver.query(q)
             code = rep.code
             if code is code.NOERROR:
@@ -109,7 +113,12 @@ class BaseHandler(socketserver.BaseRequestHandler):
         return reply
 
     def addanswers(self) -> None:
+        """
+        Add the staged records to the reply. When the reply buffer has reached
+        the max size, set the truncate flag (tc), and stop adding answers.
+        """
         maxlen = self.maxlen - len(self.response.q.qname)
+        # This buffer is just to track the message size, and is not actually sent.
         buf = DNSBuffer()
         reply = self.reply
         for rstr in self.response.rset:
@@ -123,7 +132,7 @@ class BaseHandler(socketserver.BaseRequestHandler):
 
     def finish(self) -> None:
         try:
-            self.srvr.report(self)
+            self.server.server.report(self)
         except Exception as err:
             logger.exception(f'{err!r}')
 
@@ -138,7 +147,7 @@ class BaseHandler(socketserver.BaseRequestHandler):
 class UDPHandler(BaseHandler):
     proto = 'UDP'
     # Reference: https://www.netmeister.org/blog/dns-size.html
-    maxlen: int = 503
+    maxlen: PositiveInt = settings.UDP_MAXLEN
     request: tuple[bytes, socket.socket]
 
     def read(self) -> bytes:
@@ -149,7 +158,7 @@ class UDPHandler(BaseHandler):
 
 class TCPHandler(socketserver.StreamRequestHandler, BaseHandler):
     proto = 'TCP'
-    maxlen: int = 65530
+    maxlen: PositiveInt = 65530
     request: socket.socket
 
     def read(self) -> bytes:
@@ -185,9 +194,10 @@ class ServerMixin:
             self.address_family = socket.AddressFamily.AF_INET6
         else:
             self.address_family = socket.AddressFamily.AF_INET
-        ns = dict(srvr=self.server)
-        Handler = type(self.BaseHandler.__name__, (self.BaseHandler,), ns)
-        super().__init__((str(server.address), server.port), Handler, **kw)
+        super().__init__(
+            (str(server.address), server.port),
+            type(self.BaseHandler.__name__, (self.BaseHandler,), {}),
+            **kw)
 
 class TCPServer(ServerMixin, socketserver.ThreadingTCPServer):
     BaseHandler = TCPHandler
