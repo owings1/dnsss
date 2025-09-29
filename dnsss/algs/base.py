@@ -335,20 +335,22 @@ def _mock_backend(**opts) -> ResolveFunc:
     return resolve
 
 def _file_backend(file: str):
+    import logging
     import yaml
     with open(file) as fp:
         data = yaml.safe_load(fp)
+    logger = logging.getLogger(__name__)
     def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
         rep = dict(code=Rcode.NOERROR, rrset=[], arset=[], rtime=0.0)
         try:
-            answer = data[f'{q.qname} {q.rdclass} {q.rdtype}']
+            answer = data[f'{q.qname.lower()} {q.rdclass} {q.rdtype}']
             for key in rep:
                 if key in answer:
                     rep[key] = answer[key]
         except KeyError:
             return Rcode.NOERROR, [], [], 0.0
         except:
-            raise
+            logger.exception(f'{q=}')
             return Rcode.SERVFAIL, [], [], 0.0
         return *rep.values(),
     return resolve
