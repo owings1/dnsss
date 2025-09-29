@@ -169,14 +169,16 @@ class Response(DataModel):
     "The DNS question"
     code: Rcode
     "The response code (NOERROR, NXDOMAIN, SERVFAIL, etc.)"
-    rset: Rset
-    "The records returned"
+    rrset: Rset
+    "The answer records returned"
+    arset: Rset
+    "Additional records returned"
     tag: ServersTag|None = None
     "The server group or rule tag name, for logging"
     failed: list[Server]|None = None
     "A list of servers that were tried & failed, if any"
 
-    @field_serializer('q', 'rset', 'code', mode='wrap')
+    @field_serializer('q', 'rrset', 'arset', 'code', mode='wrap')
     def _response_fields(self, value: Any, nxt: SerializerFunctionWrapHandler, info: FieldSerializationInfo):
         if info.context and info.context.get('report'):
             if isinstance(value, Question):

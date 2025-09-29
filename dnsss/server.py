@@ -58,8 +58,9 @@ class DualServer:
             peer=handler.client_address[0],
             proto=handler.proto,
             query=rep.report())
-        rjson = json.dumps(rep.rset)
-        extra = data|data['query']|dict(tag=rep.tag, rjson=rjson)
+        rrjson = json.dumps(rep.rrset)
+        arjson = json.dumps(rep.arset)
+        extra = data|data['query']|dict(tag=rep.tag, rrjson=rrjson, arjson=arjson)
         replog.info('%(code)s', dict(code=rep.code), extra=extra)
         data |= self.resolver.report(table=self.table)
         self.reports.append(dict(data))
@@ -117,18 +118,25 @@ class BaseHandler(socketserver.BaseRequestHandler):
         Add the staged records to the reply. When the reply buffer has reached
         the max size, set the truncate flag (tc), and stop adding answers.
         """
-        maxlen = self.maxlen - len(self.response.q.qname)
+        rep = self.response
+        maxlen = self.maxlen - len(rep.q.qname)
         # This buffer is just to track the message size, and is not actually sent.
         buf = DNSBuffer()
         reply = self.reply
-        for rstr in self.response.rset:
-            rr, = RR.fromZone(rstr)
-            rr.pack(buf)
-            if len(buf.data) > maxlen:
-                logger.debug(f'Truncating size={len(buf.data)}')
-                reply.header.tc = 1
-                break
-            reply.add_answer(rr)
+        # Always add the answer rrset
+        rsetfuncs = ((rep.rrset, reply.add_answer),)
+        # Add the additional records iff it is not from the default upstream servers
+        if rep.tag != 'DFLT':
+            rsetfuncs += ((rep.arset, reply.add_ar),)
+        for rset, add in rsetfuncs:
+            for rstr in rset:
+                rr, = RR.fromZone(rstr)
+                rr.pack(buf)
+                if len(buf.data) > maxlen:
+                    logger.debug(f'Truncating size={len(buf.data)}')
+                    reply.header.tc = 1
+                    break
+                add(rr)
 
     def finish(self) -> None:
         try:

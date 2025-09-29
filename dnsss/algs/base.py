@@ -12,7 +12,7 @@ from typing import Annotated, Any, Callable, Iterable, Mapping
 from ..models import *
 from ..utils import *
 
-type ResolveFuncRet = tuple[Rcode, Rset, NonNegativeFloat]
+type ResolveFuncRet = tuple[Rcode, Rset, Rset, NonNegativeFloat]
 type ResolveFunc = Callable[[Question, NonNegativeFloat, bool], ResolveFuncRet]
 
 __all__ = ()
@@ -164,7 +164,7 @@ class Resolver(DataModel):
                 # Get the response from the backend
                 backend = resolve_backend(server)
                 t = time.monotonic() - delay
-                code, rset, rtime = backend(q, lifetime, self.config.tcp)
+                code, rrset, arset, rtime = backend(q, lifetime, self.config.tcp)
                 rtime += time.monotonic() - t
                 # Report the response time & result
                 self.state.observe(server, rtime, code, servers)
@@ -181,7 +181,8 @@ class Resolver(DataModel):
             rtime=rtime,
             q=q,
             code=code,
-            rset=rset,
+            rrset=rrset,
+            arset=arset,
             tag=tag,
             failed=failed or None)
 
@@ -268,7 +269,8 @@ def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
     import dns.resolver
     backend = dns.resolver.make_resolver_at(where, int(port))
     def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
-        rset = []
+        rrset = []
+        arset = []
         try:
             rep = backend.resolve(
                 **q.model_dump(),
@@ -283,10 +285,13 @@ def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
             code = Rcode.SERVFAIL
         else:
             code = Rcode(rep.response.rcode().name)
-            rset.extend(map(str, rep.chaining_result.cnames))
+            rrset.extend(map(str, rep.chaining_result.cnames))
             if rep.rrset:
-                rset.extend(str(rep.rrset).splitlines())
-        return code, rset, 0.0
+                rrset.extend(str(rep.rrset).splitlines())
+            if rep.response.additional:
+                for rset in rep.response.additional:
+                    arset.extend(str(rset).splitlines())
+        return code, rrset, arset, 0.0
     return resolve
 
 def _mock_backend(**opts) -> ResolveFunc:
@@ -300,7 +305,8 @@ def _mock_backend(**opts) -> ResolveFunc:
     def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
         d = random.uniform(0, mock.v)
         rtime = mock.r * (1 + d)
-        rset = []
+        rrset = []
+        arset = []
         if rtime >= lifetime:
             code = Rcode.SERVFAIL
             rtime = lifetime
@@ -318,6 +324,6 @@ def _mock_backend(**opts) -> ResolveFunc:
                 else:
                     count = 1
                 for rd in islice(it, count):
-                    rset.append(f'{q.qname} 0 {q.rdclass} {q.rdtype} {rd}')
-        return code, rset, rtime
+                    rrset.append(f'{q.qname} 0 {q.rdclass} {q.rdtype} {rd}')
+        return code, rrset, arset, rtime
     return resolve
