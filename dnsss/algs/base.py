@@ -256,6 +256,12 @@ def default_nameservers() -> list[Server]:
 @functools.cache
 def resolve_backend(server: Server) -> ResolveFunc:
     'Create the backend resolve function for the server'
+    if server.lower() == 'refuse':
+        def refuse(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
+            return Rcode.REFUSED, [], [], 0.0
+        return refuse
+    if server.startswith('file@'):
+        return _file_backend(server.removeprefix('file@'))
     if server.startswith('mock'):
         configstr, = (server.split('@', maxsplit=1)[1:] or [''])
         opts = dict(
@@ -327,3 +333,23 @@ def _mock_backend(**opts) -> ResolveFunc:
                     rrset.append(f'{q.qname} 0 {q.rdclass} {q.rdtype} {rd}')
         return code, rrset, arset, rtime
     return resolve
+
+def _file_backend(file: str):
+    import yaml
+    with open(file) as fp:
+        data = yaml.safe_load(fp)
+    def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
+        rep = dict(code=Rcode.NOERROR, rrset=[], arset=[], rtime=0.0)
+        try:
+            answer = data[f'{q.qname} {q.rdclass} {q.rdtype}']
+            for key in rep:
+                if key in answer:
+                    rep[key] = answer[key]
+        except KeyError:
+            return Rcode.NOERROR, [], [], 0.0
+        except:
+            raise
+            return Rcode.SERVFAIL, [], [], 0.0
+        return *rep.values(),
+    return resolve
+        

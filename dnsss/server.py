@@ -32,10 +32,11 @@ class DualServer:
         self.resolver = resolver
         self.reports: deque[dict] = deque(maxlen=None if reports else 0)
         self.table = table
-        self.servers = (UDPServer(self), TCPServer(self))
 
     def start(self) -> None:
-        logger.info(f'PID: {os.getpid()}')
+        logger.info(f'PID: {os.getpid()} Listen: {self.address}:{self.port}')
+        
+        self.servers = (UDPServer(self), TCPServer(self))
         self.threads = [
             Thread(
                 target=server.serve_forever,
@@ -43,7 +44,7 @@ class DualServer:
                 daemon=True)
             for server in self.servers]
         for thread in self.threads:
-            logger.info(f'{thread.name} listening on {self.address}:{self.port}')
+            logger.info(f'Starting {thread.name}')
             thread.start()
 
     def shutdown(self) -> None:
