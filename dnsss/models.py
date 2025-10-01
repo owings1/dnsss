@@ -21,6 +21,7 @@ from pydantic import (AfterValidator, BeforeValidator, ConfigDict, Field,
 __all__ = [
     'AfterValidator',
     'Anomaly',
+    'BackendResponse',
     'BaseModel',
     'BeforeValidator',
     'ConfigDict',
@@ -173,12 +174,14 @@ class Response(DataModel):
     "The answer records returned"
     arset: Rset
     "Additional records returned"
+    auset: Rset
+    "Authority section"
     tag: ServersTag|None = None
     "The server group or rule tag name, for logging"
     failed: list[Server]|None = None
     "A list of servers that were tried & failed, if any"
 
-    @field_serializer('q', 'rrset', 'arset', 'code', mode='wrap')
+    @field_serializer('q', 'rrset', 'arset', 'auset', 'code', mode='wrap')
     def _response_fields(self, value: Any, nxt: SerializerFunctionWrapHandler, info: FieldSerializationInfo):
         if info.context and info.context.get('report'):
             if isinstance(value, Question):
@@ -188,6 +191,18 @@ class Response(DataModel):
         if isinstance(value, Rcode):
             return str(value)
         return nxt(value)
+
+class BackendResponse(DataModel):
+    code: Rcode = Rcode.NOERROR
+    "The response code (NOERROR, NXDOMAIN, SERVFAIL, etc.)"
+    rrset: Rset = Field(default_factory=list)
+    "The answer records returned"
+    arset: Rset = Field(default_factory=list)
+    "Additional records returned"
+    auset: Rset = Field(default_factory=list)
+    "Authority section"
+    rtime: NonNegativeFloat = 0.0
+    "The additional response time delay"
 
 class RunningMean(DataModel):
     """

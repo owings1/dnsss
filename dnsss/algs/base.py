@@ -7,13 +7,11 @@ import time
 from collections import defaultdict
 from itertools import chain, islice
 from types import MappingProxyType as MapProxy
-from typing import Annotated, Any, Callable, Iterable, Mapping
+from typing import Annotated, Any, Iterable, Mapping
 
+from .. import backends
 from ..models import *
 from ..utils import *
-
-type ResolveFuncRet = tuple[Rcode, Rset, Rset, NonNegativeFloat]
-type ResolveFunc = Callable[[Question, NonNegativeFloat, bool], ResolveFuncRet]
 
 __all__ = ()
 
@@ -162,13 +160,13 @@ class Resolver(DataModel):
                 delay = min(delay, lifetime)
                 lifetime -= delay
                 # Get the response from the backend
-                backend = resolve_backend(server)
+                backend = backends.resolve_backend(server)
                 t = time.monotonic() - delay
-                code, rrset, arset, rtime = backend(q, lifetime, self.config.tcp)
-                rtime += time.monotonic() - t
+                rep = BackendResponse.model_validate(backend(q, lifetime, self.config.tcp))
+                rep.rtime += time.monotonic() - t
                 # Report the response time & result
-                self.state.observe(server, rtime, code, servers)
-                if code is code.SERVFAIL and len(failed) < self.config.retries_max:
+                self.state.observe(server, rep.rtime, rep.code, servers)
+                if rep.code is rep.code.SERVFAIL and len(failed) < self.config.retries_max:
                     failed.append(server)
                 else:
                     # A successful response, or max retries reached with timeout
@@ -177,12 +175,9 @@ class Resolver(DataModel):
                 continue
             break
         return Response(
+            **rep.model_dump(),
             server=server,
-            rtime=rtime,
             q=q,
-            code=code,
-            rrset=rrset,
-            arset=arset,
             tag=tag,
             failed=failed or None)
 
@@ -252,106 +247,3 @@ def default_nameservers() -> list[Server]:
     "Get the list of default system resolvers"
     import dns.resolver
     return list(dns.resolver.get_default_resolver().nameservers)
-
-@functools.cache
-def resolve_backend(server: Server) -> ResolveFunc:
-    'Create the backend resolve function for the server'
-    if server.lower() == 'refuse':
-        def refuse(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
-            return Rcode.REFUSED, [], [], 0.0
-        return refuse
-    if server.startswith('file@'):
-        return _file_backend(server.removeprefix('file@'))
-    if server.startswith('mock'):
-        configstr, = (server.split('@', maxsplit=1)[1:] or [''])
-        opts = dict(
-            itemstr.split('=') for itemstr in
-            filter(None, configstr.split(',')))
-        return _mock_backend(**opts)
-    return _dnspython_backend(*server.split('@', maxsplit=1))
-
-def _dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
-    "Make a backend resolve function for a server/port using dnspython"
-    import dns.resolver
-    backend = dns.resolver.make_resolver_at(where, int(port))
-    def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
-        rrset = []
-        arset = []
-        try:
-            rep = backend.resolve(
-                **q.model_dump(),
-                raise_on_no_answer=False,
-                lifetime=lifetime,
-                tcp=tcp)
-        except dns.resolver.NoMetaqueries:
-            code = Rcode.REFUSED
-        except dns.resolver.NXDOMAIN:
-            code = Rcode.NXDOMAIN
-        except (dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
-            code = Rcode.SERVFAIL
-        else:
-            code = Rcode(rep.response.rcode().name)
-            rrset.extend(map(str, rep.chaining_result.cnames))
-            if rep.rrset:
-                rrset.extend(str(rep.rrset).splitlines())
-            if rep.response.additional:
-                for rset in rep.response.additional:
-                    arset.extend(str(rset).splitlines())
-        return code, rrset, arset, 0.0
-    return resolve
-
-def _mock_backend(**opts) -> ResolveFunc:
-    "Make a mock backend resolve function"
-    mock = MockServer.model_validate(opts)
-    import ipaddress
-    net4 = ipaddress.ip_network('10.0.0.0/8')
-    net6 = ipaddress.ip_network('fe80::/64')
-    # <n>.size.example will return n-many A or AAAA records
-    sizepat = re.compile(r'^(\d+)\.size\.example\.$')
-    def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
-        d = random.uniform(0, mock.v)
-        rtime = mock.r * (1 + d)
-        rrset = []
-        arset = []
-        if rtime >= lifetime:
-            code = Rcode.SERVFAIL
-            rtime = lifetime
-        else:
-            code = Rcode.NOERROR
-            if q.rdclass is q.rdclass.IN:
-                if q.rdtype is q.rdtype.A:
-                    it = net4.hosts()
-                elif q.rdtype is q.rdtype.AAAA:
-                    it = net6.hosts()
-                else:
-                    it = iter(())
-                if (m := sizepat.match(q.qname)):
-                    count = int(m[1])
-                else:
-                    count = 1
-                for rd in islice(it, count):
-                    rrset.append(f'{q.qname} 0 {q.rdclass} {q.rdtype} {rd}')
-        return code, rrset, arset, rtime
-    return resolve
-
-def _file_backend(file: str):
-    import logging
-    import yaml
-    with open(file) as fp:
-        data = yaml.safe_load(fp)
-    logger = logging.getLogger(__name__)
-    def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
-        rep = dict(code=Rcode.NOERROR, rrset=[], arset=[], rtime=0.0)
-        try:
-            answer = data[f'{q.qname.lower()} {q.rdclass} {q.rdtype}']
-            for key in rep:
-                if key in answer:
-                    rep[key] = answer[key]
-        except KeyError:
-            return Rcode.NOERROR, [], [], 0.0
-        except:
-            logger.exception(f'{q=}')
-            return Rcode.SERVFAIL, [], [], 0.0
-        return *rep.values(),
-    return resolve
-        

@@ -35,7 +35,6 @@ class DualServer:
 
     def start(self) -> None:
         logger.info(f'PID: {os.getpid()} Listen: {self.address}:{self.port}')
-        
         self.servers = (UDPServer(self), TCPServer(self))
         self.threads = [
             Thread(
@@ -124,11 +123,13 @@ class BaseHandler(socketserver.BaseRequestHandler):
         # This buffer is just to track the message size, and is not actually sent.
         buf = DNSBuffer()
         reply = self.reply
-        # Always add the answer rrset
-        rsetfuncs = ((rep.rrset, reply.add_answer),)
-        # Add the additional records iff it is not from the default upstream servers
-        if rep.tag != 'DFLT':
-            rsetfuncs += ((rep.arset, reply.add_ar),)
+        rsetfuncs = (
+            # The answer rrset
+            (rep.rrset, reply.add_answer),
+            # The additional records section
+            (rep.arset, reply.add_ar),
+            # The authority section
+            (rep.auset, reply.add_auth))
         for rset, add in rsetfuncs:
             for rstr in rset:
                 rr, = RR.fromZone(rstr)
@@ -136,7 +137,7 @@ class BaseHandler(socketserver.BaseRequestHandler):
                 if len(buf.data) > maxlen:
                     logger.debug(f'Truncating size={len(buf.data)}')
                     reply.header.tc = 1
-                    break
+                    return
                 add(rr)
 
     def finish(self) -> None:

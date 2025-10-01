@@ -254,6 +254,8 @@ class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
 
     def reload(self) -> None:
         "Reload the config file"
+        from .. import backends
+        backends.resolve_backend.cache_clear()
         if not self.opts.config:
             return
         with self.opts.config.open() as file:
