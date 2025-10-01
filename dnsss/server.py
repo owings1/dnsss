@@ -58,9 +58,12 @@ class DualServer:
             peer=handler.client_address[0],
             proto=handler.proto,
             query=rep.report())
-        rrjson = json.dumps(rep.rrset)
-        arjson = json.dumps(rep.arset)
-        extra = data|data['query']|dict(tag=rep.tag, rrjson=rrjson, arjson=arjson)
+        extra = data|data['query']|dict(
+            id=handler.reply.header.id,
+            tag=rep.tag,
+            rrjson=json.dumps(rep.rrset),
+            arjson=json.dumps(rep.arset),
+            aujson=json.dumps(rep.auset))
         replog.info('%(code)s', dict(code=rep.code), extra=extra)
         data |= self.resolver.report(table=self.table)
         self.reports.append(dict(data))

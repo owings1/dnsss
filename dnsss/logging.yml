@@ -4,7 +4,7 @@ formatters:
   default:
     format: '%(asctime)s %(levelname)s [%(name)s] %(message)s'
   response:
-    format: '%(asctime)s [%(server)s] [%(tag)s] [%(peer)s] %(proto)s %(code)s %(rtime).6f %(q)s %(rrjson)s %(arjson)s'
+    format: '%(asctime)s ID:%(id)d [%(server)s] [%(tag)s] [%(peer)s] %(proto)s %(code)s %(rtime).6f %(q)s %(rrjson)s %(arjson)s %(aujson)s'
 handlers:
   default:
     formatter: default
