@@ -13,7 +13,7 @@ def resolve_backend(server: Server) -> ResolveFunc:
     'Create the backend resolve function for the server'
     if server.lower() == 'refuse':
         def refuse(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
-            return Rcode.REFUSED, [], [], 0.0
+            return dict(code=Rcode.REFUSED)
         return refuse
     if server.startswith('file@'):
         return file_backend(server.removeprefix('file@'))
