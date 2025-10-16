@@ -1,0 +1,16 @@
+__pycache__
+.coverage
+.env
+.venv
+*.pyc
+/.python-version
+/.vscode
+*.yml
+!*.example.yml
+!/*/**/*.yml
+questions.*
+*.questions.*
+*.dns
+!*.example.dns
+*.log
+*.log.*

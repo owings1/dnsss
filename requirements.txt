@@ -1,0 +1,6 @@
+dnslib
+dnspython
+pydantic
+python_dotenv
+PyYAML
+tabulate

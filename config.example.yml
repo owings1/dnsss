@@ -1,0 +1,12 @@
+params:
+  o: 0.08
+servers:
+  - 8.8.8.8
+  - 8.8.4.4
+  - 1.1.1.1
+  - 129.250.35.250
+  - 208.67.222.222
+questions:
+  - stackoverflow.com
+  - gmail.com AAAA
+  - '@questions.example.dns'

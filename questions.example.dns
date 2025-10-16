@@ -1,0 +1,21 @@
+# dnsss - example questions file
+
+# a line is ignored if:
+#  - it starts with #
+#  - it is empty
+#  - it contains only whitespace
+
+www.google.com
+berkeley.edu AAAA
+
+# trailing whitespace is ignored
+
+whitehouse.gov TXT              
+
+# intermediate whitespace is normalized
+
+nytimes.com         NS
+
+# leading whitespace is NOT allowed
+# if you remove the # from the next line it will break
+#       example.com
