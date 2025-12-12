@@ -9,23 +9,29 @@ from typing import ClassVar
 
 from .. import settings
 from ..models import *
-from .base import CommonCommand, CommonOptions
+from ..utils import WatchedRotatingFileHandler
+from .base import CommonCommand, CommonOptions, LogFormat
 
+replog = logging.getLogger(f'dnsss.server.response')
 
 class ServerOptions(CommonOptions):
     address: IPvAnyAddress = Field(
         default=IPvAnyAddress(settings.LISTEN_ADDRESS),
-        description='Bind address')
+        description=f'Bind address, default {settings.LISTEN_ADDRESS}')
     port: Port = Field(
         default=settings.LISTEN_PORT,
-        description='Listen port')
+        description=f'Listen port, default {settings.LISTEN_PORT}')
     replog: Path|None = Field(
         default=None,
         description='Query response log file')
+    replog_format: LogFormat|None = Field(
+        default=None,
+        description=f'Custom response log format (%-style)')
 
 class ServerCommand(CommonCommand[ServerOptions]):
     options_model: ClassVar = ServerOptions
     logger: ClassVar = logging.getLogger(f'dnsss.server')
+    reloadable: ClassVar = CommonCommand.reloadable + ['replog_format']
     fileable: ClassVar = CommonCommand.fileable + ['address', 'port', 'replog']
 
     @classmethod
@@ -35,22 +41,24 @@ class ServerCommand(CommonCommand[ServerOptions]):
         arg('--port', '-p')
         arg('--address', '-b')
         arg('--replog')
+        arg('--replog-format')
 
     def setup(self) -> None:
         super().setup()
-        from .. import server
         self.quit = False
         if self.opts.replog:
-            from logging.handlers import RotatingFileHandler
-            handler = RotatingFileHandler(
+            self.replog_handler = WatchedRotatingFileHandler(
                 filename=self.opts.replog,
                 delay=True,
                 maxBytes=settings.REPLOG_MAXBYTES,
                 backupCount=settings.REPLOG_KEEPCOUNT)
-            handler.formatter = server.replog.handlers[0].formatter
-            handler.setLevel(logging.INFO)
-            server.replog.addHandler(handler)
-        self.server = server.DualServer(
+            self.set_replog_formatter()
+            self.replog_handler.setLevel(logging.INFO)
+            replog.addHandler(self.replog_handler)
+        else:
+            self.replog_handler = None
+        from ..server import DualServer
+        self.server = DualServer(
             address=self.opts.address,
             port=self.opts.port,
             resolver=self.resolver,
@@ -58,8 +66,16 @@ class ServerCommand(CommonCommand[ServerOptions]):
             table=self.opts.table)
         signal.signal(signal.SIGQUIT, self.SIGQUIT)
 
+    def set_replog_formatter(self) -> None:
+        if self.replog_handler:
+            if self.opts.replog_format:
+                self.replog_handler.setFormatter(logging.Formatter(self.opts.replog_format))
+            else:
+                self.replog_handler.setFormatter(replog.handlers[0].formatter)
+            
     def reload(self) -> None:
         super().reload()
+        self.set_replog_formatter()
         # Update reference after reload
         self.server.resolver = self.resolver
         self.server.table = self.opts.table

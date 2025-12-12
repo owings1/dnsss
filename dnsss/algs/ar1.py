@@ -163,18 +163,19 @@ class State(bind.State):
             self.SAR[server].reset()
 
     def observe(self, server: Server, rtime: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
-        super().observe(server, rtime, code, servers)
-        for Si in servers:
-            ARi = self.SAR[Si]
-            if Si == server:
-                # Update the ARStats of the queried server
-                ARi.observe(rtime)
-            else:
-                # Increment the idle count for all the other servers
-                ARi.idle += 1
-            if ARi.count >= self.params.p_count_min:
-                # Compute the AR prediction for every server
-                ARi.predict()
+        with self._lock:
+            super().observe(server, rtime, code, servers)
+            for Si in servers:
+                ARi = self.SAR[Si]
+                if Si == server:
+                    # Update the ARStats of the queried server
+                    ARi.observe(rtime)
+                else:
+                    # Increment the idle count for all the other servers
+                    ARi.idle += 1
+                if ARi.count >= self.params.p_count_min:
+                    # Compute the AR prediction for every server
+                    ARi.predict()
 
     def rank(self, server: Server) -> float:
         AR = self.SAR[server]

@@ -6,6 +6,7 @@ import re
 import time
 from collections import defaultdict
 from itertools import chain, islice
+from threading import RLock
 from types import MappingProxyType as MapProxy
 from typing import Annotated, Any, Iterable, Mapping
 
@@ -62,8 +63,9 @@ class State(RunningMean):
         Update any calculations & state as needed from the observed response
         time of a server. Subclasses should make sure to call super.
         """
-        self.SM[server].observe(rtime)
-        super().observe(rtime)
+        with self._lock:
+            self.SM[server].observe(rtime)
+            super().observe(rtime)
 
     def rank(self, server: Server) -> PositiveFloat:
         """
@@ -77,7 +79,8 @@ class State(RunningMean):
         servers = list(servers)
         # Shuffle the list before sorting to randomize servers of equal rank
         random.shuffle(servers)
-        servers.sort(key=self.rank)
+        with self._lock:
+            servers.sort(key=self.rank)
         return servers
 
     def load(self, data: Any) -> None:
@@ -105,6 +108,10 @@ class State(RunningMean):
             for server, info in servers.items()}
         data['servers'] = servers
         return data
+
+    def model_post_init(self, context: Any, /) -> None:
+        super().model_post_init(context)
+        self._lock = RLock()
 
 class Resolver(DataModel):
     'Resolver base class'
@@ -242,6 +249,8 @@ class Resolver(DataModel):
         for rule in self.config.rules:
             for server in rule.servers:
                 self.state.add(server)
+        # Preload cached property
+        self.servergroups
 
 def default_nameservers() -> list[Server]:
     "Get the list of default system resolvers"

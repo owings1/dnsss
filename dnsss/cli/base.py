@@ -21,6 +21,10 @@ from ..models import *
 
 type SubParsers = argparse._SubParsersAction[ArgumentParser]
 
+LogFormat = Annotated[
+    str,
+    BeforeValidator(lambda x: logging.PercentStyle(x).validate() or x)]
+
 class OutFormat(enum.StrEnum):
     json = 'json'
     yaml = 'yaml'
@@ -39,13 +43,13 @@ class CommonOptions(CommandOptions):
     algorithm: Annotated[str, BeforeValidator(valalg)] = Field(
         default=settings.DEFAULT_ALGORITHM,
         validate_default=True,
-        description='Resolver algorithm')
+        description=f'Resolver algorithm, default {settings.DEFAULT_ALGORITHM}')
     config: Path|None = Field(
         default=None,
         description='Path to YAML config file')
     output: Path = Field(
         default=Path('state.yml'),
-        description='File to write state on save')
+        description='File to write state on save, default state.yml')
     load: Annotated[Path|bool, BeforeValidator(lambda x: x is None or x)] = Field(
         default=False,
         description='Load state from file')
@@ -145,7 +149,7 @@ class ConcreteCommand[O: CommandOptions](BaseCommand):
 
     @classmethod
     def extend_actions(cls, parser: ArgumentParser) -> None:
-        "Autofill parser actions from a options fields"
+        "Autofill parser actions from options fields"
         fields = cls.options_model.model_fields
         for action in parser._actions:
             if (field := fields.get(action.dest)):

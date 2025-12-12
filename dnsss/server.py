@@ -58,7 +58,7 @@ class DualServer:
             peer=handler.client_address[0],
             proto=handler.proto,
             query=rep.report())
-        extra = data|data['query']|dict(
+        extra = data|data['query']|rep.q.report()|dict(
             id=handler.reply.header.id,
             tag=rep.tag,
             rrjson=json.dumps(rep.rrset),
@@ -73,6 +73,7 @@ class BaseHandler(socketserver.BaseRequestHandler):
     maxlen: PositiveInt
     'Max message length'
     server: BaseServerType
+    response: Response|None
 
     def setup(self) -> None:
         self.response = None

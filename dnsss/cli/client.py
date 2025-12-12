@@ -30,11 +30,16 @@ class ClientOptions(CommonOptions):
     count: NonNegativeInt = Field(
         default=0,
         description='Number of queries after which to quit')
+    sequential: bool = Field(
+        default=False,
+        description=(
+            'Iterate once over questions in sequence order, then quit. '
+            'If count is non-zero, it is treated as max'))
 
 class ClientCommand(CommonCommand[ClientOptions]):
     logger: ClassVar = logging.getLogger(f'dnsss.client')
     options_model: ClassVar = ClientOptions
-    reloadable: ClassVar = CommonCommand.reloadable + ['interval', 'count']
+    reloadable: ClassVar = CommonCommand.reloadable + ['interval', 'count', 'sequential']
     termerrors: ClassVar[tuple[type[Exception], ...]] = (
         EOFError,
         KeyboardInterrupt,
@@ -47,6 +52,7 @@ class ClientCommand(CommonCommand[ClientOptions]):
         arg = parser.add_argument
         arg('--interval', '-n')
         arg('--count', '-c')
+        arg('--sequential', '-S', action='store_true')
 
     def setup(self) -> None:
         super().setup()
@@ -57,6 +63,7 @@ class ClientCommand(CommonCommand[ClientOptions]):
             self.stdin.isatty() and
             termios.tcgetattr(self.stdin.fileno()))
         self.questions = self.config_questions(self.config)
+        self.logger.info(f'Loaded {len(self.questions)} questions')
 
     def reload(self) -> None:
         super().reload()
@@ -83,7 +90,15 @@ class ClientCommand(CommonCommand[ClientOptions]):
                 pass
         else:
             time.sleep(self.opts.interval or settings.INTERVAL_START)
-        q = random.choice(self.questions)
+        if self.count >= self.opts.count > 0:
+            raise UserQuit
+        if self.opts.sequential:
+            try:
+                q = self.questions[self.count]
+            except IndexError:
+                raise UserQuit from None
+        else:
+            q = random.choice(self.questions)
         try:
             rep = self.resolver.query(q)
         except self.termerrors:
@@ -103,6 +118,8 @@ class ClientCommand(CommonCommand[ClientOptions]):
                 self.save()
         self.count += 1
         if self.count >= self.opts.count > 0:
+            raise UserQuit
+        if self.opts.sequential and self.count >= len(self.questions):
             raise UserQuit
 
     def readtty(self) -> None:

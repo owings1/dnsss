@@ -50,24 +50,25 @@ class State(base.State):
             self.SR[server] = 0.0
 
     def observe(self, server: Server, rtime: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
-        super().observe(server, rtime, code, servers)
-        for Si in servers:
-            Ri = self.SR[Si]
-            if Si == server:
-                # For the selected server, the new value is the weighted
-                # average of the prior value (Ri) and the measured response
-                # time (R).
-                #
-                # On the first query, the prior value (Ri) will be 0, so we
-                # override (a) to 0, which will make the initial value of (R)
-                # equal to the first observed value.
-                a = Ri and self.params.a
-                r = a * Ri + (1 - a) * rtime
-            else:
-                # For all other servers, the value is slightly decreased by
-                # a fixed coefficient (g).
-                r = self.params.g * Ri
-            self.SR[Si] = r
+        with self._lock:
+            super().observe(server, rtime, code, servers)
+            for Si in servers:
+                Ri = self.SR[Si]
+                if Si == server:
+                    # For the selected server, the new value is the weighted
+                    # average of the prior value (Ri) and the measured response
+                    # time (R).
+                    #
+                    # On the first query, the prior value (Ri) will be 0, so we
+                    # override (a) to 0, which will make the initial value of (R)
+                    # equal to the first observed value.
+                    a = Ri and self.params.a
+                    r = a * Ri + (1 - a) * rtime
+                else:
+                    # For all other servers, the value is slightly decreased by
+                    # a fixed coefficient (g).
+                    r = self.params.g * Ri
+                self.SR[Si] = r
 
     def rank(self, server: Server) -> float:
         'Rank based on least R value'

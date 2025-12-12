@@ -12,8 +12,6 @@ type ResolveFunc = Callable[[Question, NonNegativeFloat, bool], ResolveFuncRet]
 def resolve_backend(server: Server) -> ResolveFunc:
     'Create the backend resolve function for the server'
     if server.lower() == 'refuse':
-        def refuse(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
-            return dict(code=Rcode.REFUSED)
         return refuse
     if server.startswith('file@'):
         return file_backend(server.removeprefix('file@'))
@@ -104,7 +102,18 @@ def mock_backend(**opts) -> ResolveFunc:
             rtime=rtime)
     return resolve
 
-def file_backend(file: str):
+def file_backend(file: str) -> ResolveFunc:
+    """
+    Make a static YAML map file backend function.
+    
+    Example format::
+    
+        # zone.yml
+        demo.domain.example. IN A:
+            rrset: [demo.domain.example. 300 IN A 10.2.3.4]
+            arset: [demo.domain.example. 300 IN AAAA ffff::1]
+            auset: [demo.domain.example. 0 IN SOA demo.domain.example. root.demo.domain.example. 1 7200 900 1209600 86400]
+    """
     import logging
     import yaml
     with open(file) as fp:
@@ -119,3 +128,6 @@ def file_backend(file: str):
             logger.exception(f'{q=}')
             return dict(code=Rcode.SERVFAIL)
     return resolve
+
+def refuse(q: Question, lifetime: NonNegativeFloat, tcp: bool) -> ResolveFuncRet:
+    return dict(code=Rcode.REFUSED)

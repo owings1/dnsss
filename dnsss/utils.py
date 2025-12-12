@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping, Self, TypeVar
+import functools
+import logging
+from logging.handlers import RotatingFileHandler, WatchedFileHandler
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Self, TypeVar
 
 import tabulate
 import yaml
@@ -14,7 +17,8 @@ __all__ = [
     'dsorted',
     'dvsorted',
     'LiteralStr',
-    'tablestr']
+    'tablestr',
+    'WatchedRotatingFileHandler']
 
 K = TypeVar('K')
 T = TypeVar('T')
@@ -51,6 +55,20 @@ def tablestr(*args, **kw) -> LiteralStr:
     "Block literal table string for YAML"
     kw.setdefault('floatfmt', settings.YAML_FLOAT_FMT)
     return LiteralStr(tabulate.tabulate(*args, **kw))
+
+class WatchedRotatingFileHandler(RotatingFileHandler, WatchedFileHandler):
+    "Rotating file handler with re-open functionality"
+
+    if not TYPE_CHECKING:
+        @functools.wraps(RotatingFileHandler.__init__, ['__doc__', '__annotations__', '__type_params__'])
+        def __init__(self, *args, **kw) -> None:
+            super().__init__(*args, **kw)
+            self.dev, self.ino = -1, -1
+            self._statstream()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.reopenIfNeeded()
+        super().emit(record)
 
 class LiteralStr(str):
     "Force a string to be represented as a block literal by YAML"
