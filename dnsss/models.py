@@ -163,7 +163,7 @@ class Question(DataModel):
 
 class Response(DataModel):
     "DNS response info"
-    id: PositiveInt = Field(lt=0xffff)
+    id: NonNegativeInt = Field(lt=0x10000)
     "Query ID"
     server: Server
     "The server that responded"
@@ -196,7 +196,7 @@ class Response(DataModel):
         return nxt(value)
 
 class BackendResponse(DataModel):
-    id: PositiveInt = Field(lt=0xffff, default_factory=lambda: random.randint(1, 0xffff))
+    id: NonNegativeInt = Field(lt=0x10000, default_factory=lambda: random.randrange(0x10000))
     "Query ID"
     code: Rcode = Rcode.NOERROR
     "The response code (NOERROR, NXDOMAIN, SERVFAIL, etc.)"

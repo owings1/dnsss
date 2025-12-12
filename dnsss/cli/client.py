@@ -11,6 +11,7 @@ from argparse import ArgumentParser
 from contextlib import contextmanager
 from pathlib import Path
 from select import select
+from threading import Thread
 from typing import Any, ClassVar, Generator, Iterable, Iterator
 
 from .. import settings
@@ -36,11 +37,15 @@ class ClientOptions(CommonOptions):
         description=(
             'Iterate once over questions in sequence order, then quit. '
             'If count is non-zero, it is treated as max'))
+    threads: PositiveInt = Field(
+        default=1,
+        description='Number of threads to use')
 
 class ClientCommand(CommonCommand[ClientOptions]):
     logger: ClassVar = logging.getLogger(f'dnsss.client')
     options_model: ClassVar = ClientOptions
     reloadable: ClassVar = CommonCommand.reloadable + ['interval', 'count', 'sequential']
+    fileable: ClassVar = CommonCommand.fileable + ['threads']
     termerrors: ClassVar[tuple[type[Exception], ...]] = (
         EOFError,
         KeyboardInterrupt,
@@ -54,9 +59,11 @@ class ClientCommand(CommonCommand[ClientOptions]):
         arg('--interval', '-n')
         arg('--count', '-c')
         arg('--sequential', '-S', action='store_true')
+        arg('--threads', '-t')
 
     def setup(self) -> None:
         super().setup()
+        self.quit = False
         self.paused = False
         self.count = 0
         self.keyaction = KeyAction(self)
@@ -67,8 +74,9 @@ class ClientCommand(CommonCommand[ClientOptions]):
         self.logger.info(f'Loaded {len(self.questions)} questions')
 
     def reload(self) -> None:
-        super().reload()
-        self.questions = self.config_questions(self.config)
+        with self._lock:
+            super().reload()
+            self.questions = self.config_questions(self.config)
 
     def run(self) -> None:
         with self.ttycontext():
@@ -76,30 +84,45 @@ class ClientCommand(CommonCommand[ClientOptions]):
             self.report(report)
             if self.stdin.isatty():
                 tty.setcbreak(self.stdin.fileno())
-            try:
-                while True:
-                    self.loop()
-            except self.termerrors:
-                pass
+            errors = []
+            def target():
+                try:
+                    while not (self.quit or errors):
+                        self.loop()
+                except self.termerrors:
+                    self.quit = True
+                except Exception as err:
+                    self.quit = True
+                    errors.append(err)
+                    self.logger.exception(f'Unexpected error')
+            threads = [Thread(target=target) for _ in range(self.opts.threads)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            if errors:
+                raise errors[-1]
 
     def loop(self) -> None:
-        self.prep_anomaly()
-        if self.stdin.isatty():
-            try:
-                self.readtty()
-            except UserContinue:
-                pass
-        else:
-            time.sleep(self.opts.interval or settings.INTERVAL_START)
-        if self.count >= self.opts.count > 0:
-            raise UserQuit
-        if self.opts.sequential:
-            try:
-                q = self.questions[self.count]
-            except IndexError:
-                raise UserQuit from None
-        else:
-            q = random.choice(self.questions)
+        with self._lock:
+            self.prep_anomaly()
+            if self.stdin.isatty():
+                try:
+                    self.readtty()
+                except UserContinue:
+                    pass
+            else:
+                time.sleep(self.opts.interval or settings.INTERVAL_START)
+            if self.count >= self.opts.count > 0:
+                raise UserQuit
+            if self.opts.sequential:
+                try:
+                    q = self.questions[self.count]
+                except IndexError:
+                    raise UserQuit from None
+            else:
+                q = random.choice(self.questions)
+            self.count += 1
         try:
             rep = self.resolver.query(q)
         except self.termerrors:
@@ -111,18 +134,18 @@ class ClientCommand(CommonCommand[ClientOptions]):
                 rrjson=json.dumps(rep.rrset),
                 arjson=json.dumps(rep.arset),
                 aujson=json.dumps(rep.auset))
-            self.replog.info('%(code)s', dict(code=rep.code), extra=extra)
             report = dict(query=rep.report())
-            if self.anomaly:
-                if self.anomaly.limit is not None:
-                    self.anomaly.limit -= 1
-                report.update(anomaly=self.anomaly.report())
-            report |= self.resolver.report(table=self.opts.table)
-            self.report(report)
+            with self._lock:
+                self.replog.info('%(code)s', dict(code=rep.code), extra=extra)
+                if self.anomaly:
+                    if self.anomaly.limit is not None:
+                        self.anomaly.limit -= 1
+                    report.update(anomaly=self.anomaly.report())
+                report |= self.resolver.report(table=self.opts.table)
+                self.report(report)
         finally:
             if self.opts.save:
                 self.save()
-        self.count += 1
         if self.count >= self.opts.count > 0:
             raise UserQuit
         if self.opts.sequential and self.count >= len(self.questions):

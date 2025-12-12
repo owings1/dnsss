@@ -10,6 +10,7 @@ from argparse import ArgumentParser, Namespace
 from collections import deque
 from io import TextIOBase
 from pathlib import Path
+from threading import RLock
 from typing import Annotated, Any, ClassVar, Sequence
 
 import yaml
@@ -206,6 +207,7 @@ class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
         arg('--replog-format')
 
     def __init__(self, parser: ArgumentParser, nsopts: Namespace) -> None:
+        self._lock = RLock()
         self.replog = logging.getLogger(f'{self.logger.name}.response')
         if nsopts.config:
             # Preload the config file before we construct the command options,
@@ -286,46 +288,49 @@ class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
 
     def reload(self) -> None:
         "Reload the config file"
-        from .. import backends
-        backends.resolve_backend.cache_clear()
-        if not self.opts.config:
-            return
-        with self.opts.config.open() as file:
-            config: dict = yaml.safe_load(file) or {} 
-        # Reload options
-        implicits = (
-            self.options_model.model_validate(
-                config.get('options') or {})
-            .model_dump(include=self.reloadable))
-        names = set(implicits).difference(self.explicits)
-        opts = self.opts
-        for name in names:
-            value = implicits[name]
-            if isinstance(value, Path):
-                implicits[name] = value = self.configcwd/value
-            if getattr(opts, name) != value:
-                self.logger.info(f'Updating {name}')
-                setattr(opts, name, value)
-        opts = self.options_model.model_validate(opts)
-        anomalies = self.config_anomalies(config)
-        # Create new resolver
-        resolver: ResolverType = registry[self.opts.algorithm](config=config)
-        resolver.state.load(self.resolver.state.model_dump())
-        self.config, self.resolver, self.implicits, self.opts, self.anomalies = (
-            config, resolver, implicits, opts, anomalies)
-        self.prep_anomaly()
-        self.set_replog_formatter()
+        with self._lock:
+            from .. import backends
+            backends.resolve_backend.cache_clear()
+            if not self.opts.config:
+                return
+            with self.opts.config.open() as file:
+                config: dict = yaml.safe_load(file) or {} 
+            # Reload options
+            implicits = (
+                self.options_model.model_validate(
+                    config.get('options') or {})
+                .model_dump(include=self.reloadable))
+            names = set(implicits).difference(self.explicits)
+            opts = self.opts
+            for name in names:
+                value = implicits[name]
+                if isinstance(value, Path):
+                    implicits[name] = value = self.configcwd/value
+                if getattr(opts, name) != value:
+                    self.logger.info(f'Updating {name}')
+                    setattr(opts, name, value)
+            opts = self.options_model.model_validate(opts)
+            anomalies = self.config_anomalies(config)
+            # Create new resolver
+            resolver: ResolverType = registry[self.opts.algorithm](config=config)
+            resolver.state.load(self.resolver.state.model_dump())
+            self.config, self.resolver, self.implicits, self.opts, self.anomalies = (
+                config, resolver, implicits, opts, anomalies)
+            self.prep_anomaly()
+            self.set_replog_formatter()
 
     def save(self) -> None:
         "Save the resolver state to the file"
-        data = self.resolver.state.model_dump()
-        with self.opts.output.open('w') as file:
-            yaml.safe_dump(data, file, sort_keys=False)
+        with self._lock:
+            data = self.resolver.state.model_dump()
+            with self.opts.output.open('w') as file:
+                yaml.safe_dump(data, file, sort_keys=False)
 
     def report(self, *args, **kw) -> None:
         if self.opts.report:
-            with self.opts.report.open('w') as out:
-                self.reportout(out, dict(*args, **kw), flush=False)
+            with self._lock:    
+                with self.opts.report.open('w') as out:
+                    self.reportout(out, dict(*args, **kw), flush=False)
         elif not self.opts.quiet:
             self.reportout(self.stdout, dict(*args, **kw), flush=True)
 
@@ -333,18 +338,19 @@ class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
         self.reportout(self.stdout, dict(*args, **kw), flush=True)
 
     def reportout(self, out: TextIOBase, data: Any, flush: bool = False) -> None:
-        if self.opts.format is OutFormat.json:
-            json.dump(data, out, indent=2)
-        else:
-            yaml.dump(data, out, sort_keys=False, width=float('inf'))
-        out.write('\n')
-        if flush:
-            if self.opts.format is not OutFormat.json:
-                out.write('---\n')
-                if not out.isatty():
-                    # Piping to yq needs this
-                    out.write('---\n---\n')
-            out.flush()
+        with self._lock:
+            if self.opts.format is OutFormat.json:
+                json.dump(data, out, indent=2)
+            else:
+                yaml.dump(data, out, sort_keys=False, width=float('inf'))
+            out.write('\n')
+            if flush:
+                if self.opts.format is not OutFormat.json:
+                    out.write('---\n')
+                    if not out.isatty():
+                        # Piping to yq needs this
+                        out.write('---\n---\n')
+                out.flush()
 
     def config_anomalies(self, config: dict) -> deque[Anomaly]:
         return deque(
