@@ -33,6 +33,7 @@ def dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
         rrset = []
         arset = []
         auset = []
+        extra = {}
         try:
             rep = backend.resolve(
                 **q.model_dump(),
@@ -46,6 +47,7 @@ def dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
         except (dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
             code = Rcode.SERVFAIL
         else:
+            extra.update(id=rep.response.id)
             code = Rcode(rep.response.rcode().name)
             rrset.extend(map(str, rep.chaining_result.cnames))
             if rep.rrset:
@@ -57,6 +59,7 @@ def dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
                 for rset in rep.response.authority:
                     auset.extend(unescape(str(rset)).splitlines())
         return BackendResponse(
+            **extra,
             code=code,
             rrset=rrset,
             arset=arset,

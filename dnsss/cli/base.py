@@ -18,6 +18,7 @@ from pydantic.fields import FieldInfo
 from .. import settings
 from ..algs import ResolverType, registry
 from ..models import *
+from ..utils import WatchedRotatingFileHandler
 
 type SubParsers = argparse._SubParsersAction[ArgumentParser]
 
@@ -65,6 +66,12 @@ class CommonOptions(CommandOptions):
     report: Path|None = Field(
         default=None,
         description='Report to file instead of stdout')
+    replog: Path|None = Field(
+        default=None,
+        description='Query response log file')
+    replog_format: LogFormat|None = Field(
+        default=None,
+        description=f'Custom response log format (%-style)')
 
     @property
     def table(self) -> bool:
@@ -174,9 +181,9 @@ class ConcreteCommand[O: CommandOptions](BaseCommand):
 class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
     options_model: ClassVar = CommonOptions
     logger: ClassVar = logging.getLogger('dnsss')
-    reloadable: ClassVar = ['algorithm', 'output', 'save', 'report', 'format', 'quiet']
+    reloadable: ClassVar = ['algorithm', 'output', 'save', 'report', 'format', 'quiet', 'replog_format']
     "Options fields that can be reloaded from the config file during runtime"
-    fileable: ClassVar = ['load']
+    fileable: ClassVar = ['load', 'replog']
     "Options fields that can be initialized from the config file, but not reloaded"
 
     @classmethod
@@ -195,8 +202,11 @@ class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
         arg('--format', '-F', choices=OutFormat)
         arg('--quiet', '-q', action='store_true')
         arg('--report', '-r')
+        arg('--replog')
+        arg('--replog-format')
 
     def __init__(self, parser: ArgumentParser, nsopts: Namespace) -> None:
+        self.replog = logging.getLogger(f'{self.logger.name}.response')
         if nsopts.config:
             # Preload the config file before we construct the command options,
             # so we can specify default command options in the config file.
@@ -253,8 +263,26 @@ class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
             with self.opts.load.open() as file:
                 state = yaml.safe_load(file) or {}
             self.resolver.state.load(state)
+        if self.opts.replog:
+            self.replog_handler = WatchedRotatingFileHandler(
+                filename=self.opts.replog,
+                delay=True,
+                maxBytes=settings.REPLOG_MAXBYTES,
+                backupCount=settings.REPLOG_KEEPCOUNT)
+            self.set_replog_formatter()
+            self.replog_handler.setLevel(logging.INFO)
+            self.replog.addHandler(self.replog_handler)
+        else:
+            self.replog_handler = None
         self.prep_anomaly()
         signal.signal(signal.SIGHUP, self.SIGHUP)
+
+    def set_replog_formatter(self) -> None:
+        if self.replog_handler:
+            if self.opts.replog_format:
+                self.replog_handler.setFormatter(logging.Formatter(self.opts.replog_format))
+            else:
+                self.replog_handler.setFormatter(self.replog.handlers[0].formatter)
 
     def reload(self) -> None:
         "Reload the config file"
@@ -286,6 +314,7 @@ class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
         self.config, self.resolver, self.implicits, self.opts, self.anomalies = (
             config, resolver, implicits, opts, anomalies)
         self.prep_anomaly()
+        self.set_replog_formatter()
 
     def save(self) -> None:
         "Save the resolver state to the file"

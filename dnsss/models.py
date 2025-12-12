@@ -4,6 +4,7 @@ import enum
 import ipaddress
 import math
 import operator
+import random
 import re
 from functools import cached_property
 from typing import Annotated, Any, Callable, Self
@@ -162,6 +163,8 @@ class Question(DataModel):
 
 class Response(DataModel):
     "DNS response info"
+    id: PositiveInt = Field(lt=0xffff)
+    "Query ID"
     server: Server
     "The server that responded"
     rtime: NonNegativeFloat
@@ -193,6 +196,8 @@ class Response(DataModel):
         return nxt(value)
 
 class BackendResponse(DataModel):
+    id: PositiveInt = Field(lt=0xffff, default_factory=lambda: random.randint(1, 0xffff))
+    "Query ID"
     code: Rcode = Rcode.NOERROR
     "The response code (NOERROR, NXDOMAIN, SERVFAIL, etc.)"
     rrset: Rset = Field(default_factory=list)

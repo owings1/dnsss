@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import random
 import re
@@ -106,6 +107,11 @@ class ClientCommand(CommonCommand[ClientOptions]):
         except:
             self.logger.exception(f'Query failed')
         else:
+            extra = rep.report()|rep.q.report()|dict(
+                rrjson=json.dumps(rep.rrset),
+                arjson=json.dumps(rep.arset),
+                aujson=json.dumps(rep.auset))
+            self.replog.info('%(code)s', dict(code=rep.code), extra=extra)
             report = dict(query=rep.report())
             if self.anomaly:
                 if self.anomaly.limit is not None:
@@ -250,4 +256,3 @@ def resolve_questions(entries: Iterable[Any], cwd: Path) -> Iterator[Question]:
         for qstr in it:
             qvals = (qstr.split(maxsplit=1) + ['A'])[:2]
             yield Question.model_validate(dict(zip(qkeys, qvals)))
-
