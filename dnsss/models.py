@@ -6,6 +6,7 @@ import math
 import operator
 import random
 import re
+import time
 from functools import cached_property
 from typing import Annotated, Any, Callable, Self
 
@@ -45,6 +46,7 @@ __all__ = [
     'Response',
     'Rset',
     'RunningMean',
+    'RunningRate',
     'RunningVariance',
     'Server',
     'ServersTag']
@@ -251,6 +253,31 @@ class RunningVariance(RunningMean):
         if self.count > 1:
             self.variance = self.delta_m2 / (self.count - 1)
             self.stdev = math.sqrt(self.variance)
+
+class RunningRate(DataModel):
+    """
+    Sliding window rate per second
+    """
+    window: PositiveFloat = 5.0
+    "Size of window in seconds"
+    count: NonNegativeInt = 0
+    cprev: NonNegativeInt = 0
+    start: PositiveFloat = Field(default_factory=time.monotonic)
+
+    def inc(self, i: int = 1) -> None:
+        "Increment counter"
+        self.count += i
+
+    def val(self) -> NonNegativeFloat:
+        "Current rate estimate"
+        if (now := time.monotonic()) >= self.start + self.window:
+            self.cprev, self.count, self.start = self.count, 0, now
+        elapsed = now - self.start
+        if elapsed < self.window:
+            weight = (self.window - elapsed) / self.window
+        else:
+            weight = 0.0
+        return (self.cprev * weight + self.count) / self.window
 
 class DomainRule(DataModel):
     """

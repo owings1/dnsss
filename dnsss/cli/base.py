@@ -185,7 +185,14 @@ class ClientServerBaseCommand[O: ClientServerBaseOptions](ConcreteCommand[O]):
     "Common base class for client and server commands"
     options_model: ClassVar = ClientServerBaseOptions
     logger: ClassVar = logging.getLogger('dnsss')
-    reloadable: ClassVar = ['algorithm', 'output', 'save', 'report', 'format', 'quiet', 'replog_format']
+    reloadable: ClassVar = [
+        'algorithm',
+        'output',
+        'save',
+        'report',
+        'format',
+        'quiet',
+        'replog_format']
     "Options fields that can be reloaded from the config file during runtime"
     fileable: ClassVar = ['load', 'replog']
     "Options fields that can be initialized from the config file, but not reloaded"
@@ -206,8 +213,8 @@ class ClientServerBaseCommand[O: ClientServerBaseOptions](ConcreteCommand[O]):
         arg('--format', '-F', choices=OutFormat)
         arg('--quiet', '-q', action='store_true')
         arg('--report', '-r')
-        arg('--replog')
-        arg('--replog-format')
+        arg('--replog', '-L')
+        arg('--replog-format', '-R')
 
     def __init__(self, parser: ArgumentParser, nsopts: Namespace) -> None:
         self._lock = RLock()

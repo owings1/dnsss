@@ -46,11 +46,19 @@ class ClientOptions(ClientServerBaseOptions):
     threads: PositiveInt = Field(
         default=1,
         description='Number of threads to use')
+    qps_max: NonNegativeFloat = Field(
+        default=0.0,
+        description='Max queries per second')
 
 class ClientCommand(ClientServerBaseCommand[ClientOptions]):
     logger: ClassVar = logging.getLogger(f'dnsss.client')
     options_model: ClassVar = ClientOptions
-    reloadable: ClassVar = ClientServerBaseCommand.reloadable + ['interval', 'count', 'sequential', 'skip']
+    reloadable: ClassVar = ClientServerBaseCommand.reloadable + [
+        'interval',
+        'count',
+        'sequential',
+        'skip',
+        'qps_max']
     fileable: ClassVar = ClientServerBaseCommand.fileable + ['threads']
     termerrors: ClassVar[tuple[type[Exception], ...]] = (
         EOFError,
@@ -67,6 +75,7 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
         arg('--sequential', '-S', action='store_true')
         arg('--skip', '-k')
         arg('--threads', '-t')
+        arg('--qps-max', '-M')
 
     def setup(self) -> None:
         super().setup()
@@ -74,6 +83,7 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
         self.quit = False
         self.paused = False
         self.count = 0
+        self.qps = RunningRate(window=5.0)
         self.keyaction = KeyAction(self)
         self.tcorgattr = (
             self.stdin.isatty() and
@@ -93,7 +103,7 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
             if self.stdin.isatty():
                 tty.setcbreak(self.stdin.fileno())
             errors = []
-            def target():
+            def target() -> None:
                 try:
                     while not (self.quit or errors):
                         try:
@@ -135,6 +145,8 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
                 time.sleep(self.opts.interval or settings.INTERVAL_START)
             if self.count >= self.opts.count > 0:
                 raise UserQuit
+            if self.qps.val() >= self.opts.qps_max > 0:
+                return
             if self.opts.sequential:
                 try:
                     q = self.questions[self.count+self.opts.skip]
@@ -143,6 +155,7 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
             else:
                 q = random.choice(self.questions)
             self.count += 1
+            self.qps.count += 1
         try:
             rep = self.resolver.query(q)
         except self.termerrors:
@@ -161,6 +174,7 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
                     if self.anomaly.limit is not None:
                         self.anomaly.limit -= 1
                     report.update(anomaly=self.anomaly.report())
+                report.update(qps=self.qps.val())
                 report |= self.resolver.report(table=self.opts.table)
                 self.report(report)
         finally:
