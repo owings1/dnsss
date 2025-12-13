@@ -50,7 +50,7 @@ class ClientOptions(ClientServerBaseOptions):
 class ClientCommand(ClientServerBaseCommand[ClientOptions]):
     logger: ClassVar = logging.getLogger(f'dnsss.client')
     options_model: ClassVar = ClientOptions
-    reloadable: ClassVar = ClientServerBaseCommand.reloadable + ['interval', 'count', 'sequential']
+    reloadable: ClassVar = ClientServerBaseCommand.reloadable + ['interval', 'count', 'sequential', 'skip']
     fileable: ClassVar = ClientServerBaseCommand.fileable + ['threads']
     termerrors: ClassVar[tuple[type[Exception], ...]] = (
         EOFError,
