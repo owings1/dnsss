@@ -40,6 +40,9 @@ class ClientOptions(ClientServerBaseOptions):
         description=(
             'Iterate once over questions in sequence order, then quit. '
             'If count is non-zero, it is treated as max'))
+    skip: NonNegativeInt = Field(
+        default=0,
+        description='In sequential mode, the offset at which to start')
     threads: PositiveInt = Field(
         default=1,
         description='Number of threads to use')
@@ -62,6 +65,7 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
         arg('--interval', '-n')
         arg('--count', '-c')
         arg('--sequential', '-S', action='store_true')
+        arg('--skip', '-k')
         arg('--threads', '-t')
 
     def setup(self) -> None:
@@ -133,7 +137,7 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
                 raise UserQuit
             if self.opts.sequential:
                 try:
-                    q = self.questions[self.count]
+                    q = self.questions[self.count+self.opts.skip]
                 except IndexError:
                     raise UserQuit from None
             else:
@@ -164,7 +168,7 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
                 self.save()
         if self.count >= self.opts.count > 0:
             raise UserQuit
-        if self.opts.sequential and self.count >= len(self.questions):
+        if self.opts.sequential and self.count + self.opts.skip >= len(self.questions):
             raise UserQuit
 
     def readtty(self) -> None:
