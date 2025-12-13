@@ -26,6 +26,7 @@ def resolve_backend(server: Server) -> ResolveFunc:
 def dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
     "Make a backend resolve function for a server/port using dnspython"
     import dns.resolver
+    from dns.message import Message
     backend = dns.resolver.make_resolver_at(where, int(port))
     def unescape(s: str) -> str:
         return s.replace(r'\@', '@')
@@ -42,8 +43,18 @@ def dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
                 tcp=tcp)
         except dns.resolver.NoMetaqueries:
             code = Rcode.REFUSED
-        except dns.resolver.NXDOMAIN:
+        except dns.resolver.NXDOMAIN as nx:
             code = Rcode.NXDOMAIN
+            msgs: list[Message] = list(nx.responses().values())
+            for msg in msgs:
+                if msg.id:
+                    extra.update(id=msg.id)
+                if msg.additional:
+                    for rset in msg.additional:
+                        arset.extend(unescape(str(rset)).splitlines())
+                if msg.authority:
+                    for rset in msg.authority:
+                        auset.extend(unescape(str(rset)).splitlines())
         except (dns.resolver.NoNameservers, dns.resolver.LifetimeTimeout):
             code = Rcode.SERVFAIL
         else:
