@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import signal
 import time
 from argparse import ArgumentParser
 from typing import ClassVar
@@ -41,7 +40,6 @@ class ServerCommand(ClientServerBaseCommand[ServerOptions]):
             resolver=self.resolver,
             reports=True,
             table=self.opts.table)
-        signal.signal(signal.SIGQUIT, self.SIGQUIT)
             
     def reload(self) -> None:
         super().reload()
@@ -74,8 +72,3 @@ class ServerCommand(ClientServerBaseCommand[ServerOptions]):
                 self.save()
             self.prep_anomaly()
         time.sleep(settings.SERVER_SLEEP_DELAY)
-
-    def SIGQUIT(self, signum, frame) -> None:
-        'SIGQUIT handler'
-        self.logger.warning(f'Received signal {signum} SIGQUIT')
-        self.quit = True

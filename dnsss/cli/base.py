@@ -289,6 +289,7 @@ class ClientServerBaseCommand[O: ClientServerBaseOptions](ConcreteCommand[O]):
             self.replog_handler = None
         self.prep_anomaly()
         signal.signal(signal.SIGHUP, self.SIGHUP)
+        signal.signal(signal.SIGQUIT, self.SIGQUIT)
 
     def set_replog_formatter(self) -> None:
         if self.replog_handler:
@@ -395,3 +396,8 @@ class ClientServerBaseCommand[O: ClientServerBaseOptions](ConcreteCommand[O]):
             self.logger.exception(f'Reload failed')
         else:
             self.logger.info(f'Reload succeded')
+
+    def SIGQUIT(self, signum, frame) -> None:
+        'SIGQUIT handler'
+        self.logger.warning(f'Received signal {signum} SIGQUIT')
+        self.quit = True
