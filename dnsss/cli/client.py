@@ -107,11 +107,15 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
             threads = [Thread(target=target) for _ in range(self.opts.threads)]
             for thread in threads:
                 thread.start()
-            try:
+            while True:
                 for thread in threads:
-                    thread.join()
-            except self.termerrors:
-                pass
+                    try:
+                        thread.join()
+                    except self.termerrors:
+                        self.quit = True
+                        break
+                else:
+                    break
             if errors:
                 raise errors[-1]
 
@@ -179,6 +183,8 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
                 raise UserHupping
             if not self.paused and 0 < self.opts.interval < t:
                 raise UserContinue
+            if self.quit:
+                raise UserQuit
 
     @contextmanager
     def ttycontext(self, when: int = termios.TCSADRAIN) -> Generator[None]:
