@@ -8,10 +8,10 @@ from typing import ClassVar
 
 from .. import settings
 from ..models import *
-from .base import CommonCommand, CommonOptions
+from .base import ClientServerBaseCommand, ClientServerBaseOptions
 
 
-class ServerOptions(CommonOptions):
+class ServerOptions(ClientServerBaseOptions):
     address: IPvAnyAddress = Field(
         default=IPvAnyAddress(settings.LISTEN_ADDRESS),
         description=f'Bind address, default {settings.LISTEN_ADDRESS}')
@@ -19,10 +19,10 @@ class ServerOptions(CommonOptions):
         default=settings.LISTEN_PORT,
         description=f'Listen port, default {settings.LISTEN_PORT}')
 
-class ServerCommand(CommonCommand[ServerOptions]):
+class ServerCommand(ClientServerBaseCommand[ServerOptions]):
     options_model: ClassVar = ServerOptions
     logger: ClassVar = logging.getLogger(f'dnsss.server')
-    fileable: ClassVar = CommonCommand.fileable + ['address', 'port']
+    fileable: ClassVar = ClientServerBaseCommand.fileable + ['address', 'port']
 
     @classmethod
     def add_arguments(cls, parser: ArgumentParser) -> None:

@@ -4,6 +4,7 @@ import argparse
 import enum
 import json
 import logging
+import os
 import signal
 import sys
 from argparse import ArgumentParser, Namespace
@@ -35,49 +36,6 @@ class OutFormat(enum.StrEnum):
 class CommandOptions(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-def valalg(alg: str) -> str:
-    alg = alg.lower()
-    if alg in registry:
-        return alg
-    raise ValueError('Invalid algorithm')
-
-class CommonOptions(CommandOptions):
-    algorithm: Annotated[str, BeforeValidator(valalg)] = Field(
-        default=settings.DEFAULT_ALGORITHM,
-        validate_default=True,
-        description=f'Resolver algorithm, default {settings.DEFAULT_ALGORITHM}')
-    config: Path|None = Field(
-        default=None,
-        description='Path to YAML config file')
-    output: Path = Field(
-        default=Path('state.yml'),
-        description='File to write state on save, default state.yml')
-    load: Annotated[Path|bool, BeforeValidator(lambda x: x is None or x)] = Field(
-        default=False,
-        description='Load state from file')
-    save: bool = Field(
-        default=False,
-        description='Save state file automatically')
-    format: OutFormat = Field(
-        default=OutFormat[settings.DEFAULT_FORMAT],
-        description=f'Output format, default {settings.DEFAULT_FORMAT}')
-    quiet: bool = Field(
-        default=False,
-        description='Dont output report')
-    report: Path|None = Field(
-        default=None,
-        description='Report to file instead of stdout')
-    replog: Path|None = Field(
-        default=None,
-        description='Query response log file')
-    replog_format: LogFormat|None = Field(
-        default=None,
-        description=f'Custom response log format (%-style)')
-
-    @property
-    def table(self) -> bool:
-        return self.format is self.format.table
-
 class BaseCommand:
     prog: ClassVar[str|None] = None
     description: ClassVar[str|None] = None
@@ -90,7 +48,7 @@ class BaseCommand:
 
     @classmethod
     def init_parser(cls, parser: ArgumentParser) -> None:
-        parser.description = cls.description
+        parser.description = cls.description or parser.description
         parser.prog = cls.prog or parser.prog
 
     @classmethod
@@ -179,8 +137,53 @@ class ConcreteCommand[O: CommandOptions](BaseCommand):
 
     def run(self) -> None: ...
 
-class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
-    options_model: ClassVar = CommonOptions
+def valalg(alg: str) -> str:
+    alg = alg.lower()
+    if alg in registry:
+        return alg
+    raise ValueError('Invalid algorithm')
+
+class ClientServerBaseOptions(CommandOptions):
+    "Common base class for client and server options"
+    algorithm: Annotated[str, BeforeValidator(valalg)] = Field(
+        default=settings.DEFAULT_ALGORITHM,
+        validate_default=True,
+        description=f'Resolver algorithm, default {settings.DEFAULT_ALGORITHM}')
+    config: Path|None = Field(
+        default=None,
+        description='Path to YAML config file')
+    output: Path = Field(
+        default=Path('state.yml'),
+        description='File to write state on save, default state.yml')
+    load: Annotated[Path|bool, BeforeValidator(lambda x: x is None or x)] = Field(
+        default=False,
+        description='Load state from file')
+    save: bool = Field(
+        default=False,
+        description='Save state file automatically')
+    format: OutFormat = Field(
+        default=OutFormat[settings.DEFAULT_FORMAT],
+        description=f'Output format, default {settings.DEFAULT_FORMAT}')
+    quiet: bool = Field(
+        default=False,
+        description='Dont output report')
+    report: Path|None = Field(
+        default=None,
+        description='Report to file instead of stdout')
+    replog: Path|None = Field(
+        default=None,
+        description='Query response log file')
+    replog_format: LogFormat|None = Field(
+        default=None,
+        description=f'Custom response log format (%-style)')
+
+    @property
+    def table(self) -> bool:
+        return self.format is self.format.table
+
+class ClientServerBaseCommand[O: ClientServerBaseOptions](ConcreteCommand[O]):
+    "Common base class for client and server commands"
+    options_model: ClassVar = ClientServerBaseOptions
     logger: ClassVar = logging.getLogger('dnsss')
     reloadable: ClassVar = ['algorithm', 'output', 'save', 'report', 'format', 'quiet', 'replog_format']
     "Options fields that can be reloaded from the config file during runtime"
@@ -248,6 +251,7 @@ class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
 
     def setup(self) -> None:
         super().setup()
+        self.logger.info(f'PID: {os.getpid()}')
         self.anomaly: Anomaly|None = None
         self.anomalies = self.config_anomalies(self.config)
         self.resolver = registry[self.opts.algorithm](config=self.config)
@@ -282,9 +286,10 @@ class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
     def set_replog_formatter(self) -> None:
         if self.replog_handler:
             if self.opts.replog_format:
-                self.replog_handler.setFormatter(logging.Formatter(self.opts.replog_format))
+                formatter = logging.Formatter(self.opts.replog_format)
             else:
-                self.replog_handler.setFormatter(self.replog.handlers[0].formatter)
+                formatter = self.replog.handlers[0].formatter
+            self.replog_handler.setFormatter(formatter)
 
     def reload(self) -> None:
         "Reload the config file"
@@ -295,19 +300,22 @@ class CommonCommand[O: CommonOptions](ConcreteCommand[O]):
                 return
             with self.opts.config.open() as file:
                 config: dict = yaml.safe_load(file) or {} 
-            # Reload options
+            # Only consider options from tne config that are reloadable
             implicits = (
                 self.options_model.model_validate(
                     config.get('options') or {})
                 .model_dump(include=self.reloadable))
+            # Only consider options from the config that were not explicitly
+            # passed on the command line
             names = set(implicits).difference(self.explicits)
-            opts = self.opts
+            # opts = self.opts
+            opts = self.options_model(**self.opts.model_dump())
             for name in names:
                 value = implicits[name]
                 if isinstance(value, Path):
                     implicits[name] = value = self.configcwd/value
                 if getattr(opts, name) != value:
-                    self.logger.info(f'Updating {name}')
+                    self.logger.info(f'Updating option {name!r}')
                     setattr(opts, name, value)
             opts = self.options_model.model_validate(opts)
             anomalies = self.config_anomalies(config)

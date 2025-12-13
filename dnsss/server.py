@@ -34,7 +34,7 @@ class DualServer:
         self.table = table
 
     def start(self) -> None:
-        logger.info(f'PID: {os.getpid()} Listen: {self.address}:{self.port}')
+        logger.info(f'Listen: {self.address}:{self.port}')
         self.servers = (UDPServer(self), TCPServer(self))
         self.threads = [
             Thread(

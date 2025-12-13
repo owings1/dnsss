@@ -16,7 +16,7 @@ from typing import Any, ClassVar, Generator, Iterable, Iterator
 
 from .. import settings
 from ..models import *
-from .base import CommonCommand, CommonOptions
+from .base import ClientServerBaseCommand, ClientServerBaseOptions
 
 
 class UserQuit(Exception):
@@ -25,7 +25,10 @@ class UserQuit(Exception):
 class UserContinue(Exception):
     pass
 
-class ClientOptions(CommonOptions):
+class UserHupping(Exception):
+    pass
+
+class ClientOptions(ClientServerBaseOptions):
     interval: NonNegativeFloat = Field(
         default=0.0,
         description='Poll interval')
@@ -41,11 +44,11 @@ class ClientOptions(CommonOptions):
         default=1,
         description='Number of threads to use')
 
-class ClientCommand(CommonCommand[ClientOptions]):
+class ClientCommand(ClientServerBaseCommand[ClientOptions]):
     logger: ClassVar = logging.getLogger(f'dnsss.client')
     options_model: ClassVar = ClientOptions
-    reloadable: ClassVar = CommonCommand.reloadable + ['interval', 'count', 'sequential']
-    fileable: ClassVar = CommonCommand.fileable + ['threads']
+    reloadable: ClassVar = ClientServerBaseCommand.reloadable + ['interval', 'count', 'sequential']
+    fileable: ClassVar = ClientServerBaseCommand.fileable + ['threads']
     termerrors: ClassVar[tuple[type[Exception], ...]] = (
         EOFError,
         KeyboardInterrupt,
@@ -63,6 +66,7 @@ class ClientCommand(CommonCommand[ClientOptions]):
 
     def setup(self) -> None:
         super().setup()
+        self.hupping = False
         self.quit = False
         self.paused = False
         self.count = 0
@@ -88,7 +92,12 @@ class ClientCommand(CommonCommand[ClientOptions]):
             def target():
                 try:
                     while not (self.quit or errors):
-                        self.loop()
+                        try:
+                            self.loop()
+                        except UserHupping:
+                            # Yield lock to SIGHUP and restart loop
+                            time.sleep(settings.HUPPING_DELAY)
+                            continue
                 except self.termerrors:
                     self.quit = True
                 except Exception as err:
@@ -98,8 +107,11 @@ class ClientCommand(CommonCommand[ClientOptions]):
             threads = [Thread(target=target) for _ in range(self.opts.threads)]
             for thread in threads:
                 thread.start()
-            for thread in threads:
-                thread.join()
+            try:
+                for thread in threads:
+                    thread.join()
+            except self.termerrors:
+                pass
             if errors:
                 raise errors[-1]
 
@@ -159,6 +171,12 @@ class ClientCommand(CommonCommand[ClientOptions]):
                 key = self.stdin.read(1).upper()
                 self.keyaction(key)
             t = time.monotonic() - start
+            if (
+                self.hupping and 
+                (self.paused or not self.opts.interval) and
+                t > settings.HUPPING_RELEASE / self.opts.threads):
+                # Avoid deadlock on SIGHUP when idle
+                raise UserHupping
             if not self.paused and 0 < self.opts.interval < t:
                 raise UserContinue
 
@@ -177,6 +195,16 @@ class ClientCommand(CommonCommand[ClientOptions]):
     def config_questions(self, config: dict) -> list[Question]:
         qentries = config.get('questions') or [settings.DEFAULT_QNAME]
         return list(resolve_questions(qentries, self.configcwd))
+
+    def SIGHUP(self, signum, frame) -> None:
+        if self.hupping:
+            self.logger.warning(f'Ignoring extra SIGHUP, already in progress')
+            return
+        self.hupping = True
+        try:
+            super().SIGHUP(signum, frame)
+        finally:
+            self.hupping = False
 
 class KeyAction:
     keymap: ClassVar[dict[str, str]] = {
