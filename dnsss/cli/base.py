@@ -230,16 +230,17 @@ class ClientServerBaseCommand[O: ClientServerBaseOptions](ConcreteCommand[O]):
             self.config = {}
             self.configcwd = Path('.')
         # Options set in the config file
-        self.implicits = (
+        self.implicits: dict[str, Any] = (
             self.options_model.model_validate(
                 self.config.get('options') or {})
             .model_dump(include=self.reloadable + self.fileable))
         # Options passed on the command line take precedence
         UNSET = (None, False, ...)
-        self.explicits = {
+        self.explicits: dict[str, Any] = {
             name: value for name, value
             in vars(nsopts).items()
             if value not in UNSET}
+        # Populate the args namespace with options set in the config file
         for name, value in self.implicits.items():
             if name in self.explicits:
                 # Ignore config file for options set on the command line
@@ -282,11 +283,11 @@ class ClientServerBaseCommand[O: ClientServerBaseOptions](ConcreteCommand[O]):
                 delay=True,
                 maxBytes=settings.REPLOG_MAXBYTES,
                 backupCount=settings.REPLOG_KEEPCOUNT)
-            self.set_replog_formatter()
             self.replog_handler.setLevel(logging.INFO)
             self.replog.addHandler(self.replog_handler)
         else:
             self.replog_handler = None
+        self.set_replog_formatter()
         self.prep_anomaly()
         signal.signal(signal.SIGHUP, self.SIGHUP)
         signal.signal(signal.SIGQUIT, self.SIGQUIT)
@@ -303,6 +304,7 @@ class ClientServerBaseCommand[O: ClientServerBaseOptions](ConcreteCommand[O]):
         "Reload the config file"
         with self._lock:
             from .. import backends
+            # Force recreate of backend functions so any dependent files are reloaded
             backends.resolve_backend.cache_clear()
             if not self.opts.config:
                 return
@@ -316,7 +318,6 @@ class ClientServerBaseCommand[O: ClientServerBaseOptions](ConcreteCommand[O]):
             # Only consider options from the config that were not explicitly
             # passed on the command line
             names = set(implicits).difference(self.explicits)
-            # opts = self.opts
             opts = self.options_model(**self.opts.model_dump())
             for name in names:
                 value = implicits[name]

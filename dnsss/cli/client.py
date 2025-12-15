@@ -163,7 +163,7 @@ class ClientCommand(ClientServerBaseCommand[ClientOptions]):
         except:
             self.logger.exception(f'Query failed')
         else:
-            extra = rep.report()|rep.q.report()|dict(
+            extra = dict(ername='')|rep.report()|rep.q.report()|dict(
                 rrjson=json.dumps(rep.rrset),
                 arjson=json.dumps(rep.arset),
                 aujson=json.dumps(rep.auset))

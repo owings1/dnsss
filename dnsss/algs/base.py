@@ -41,6 +41,8 @@ class Config(DataModel):
     'Maximum number of retries for timeouts'
     tcp: bool = False
     'Whether to use TCP'
+    source: IPvAnyAddress|None = None
+    'Source address'
     params: Params = Field(default_factory=Params, frozen=True)
     'Reference to the algorithm params'
 
@@ -56,6 +58,8 @@ class State(RunningMean):
     def add(self, server: Server) -> None:
         'Initialize server state'
         if server not in self.SM:
+            # Fail fast
+            backends.resolve_backend(server)
             self.SM[server] = RunningMean()
 
     def observe(self, server: Server, rtime: NonNegativeFloat, code: Rcode, servers: list[Server]) -> None:
@@ -169,7 +173,8 @@ class Resolver(DataModel):
                 # Get the response from the backend
                 backend = backends.resolve_backend(server)
                 t = time.monotonic() - delay
-                rep = BackendResponse.model_validate(backend(q, lifetime, self.config.tcp))
+                rep = BackendResponse.model_validate(
+                    backend(q, lifetime, self.config.tcp, self.config.source))
                 rep.rtime += time.monotonic() - t
                 # Report the response time & result
                 self.state.observe(server, rep.rtime, rep.code, servers)

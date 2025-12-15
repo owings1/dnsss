@@ -8,7 +8,6 @@ import struct
 from abc import abstractmethod
 from collections import deque
 from threading import Thread
-from typing import Literal
 
 from dnslib import CLASS, QTYPE, RR, DNSBuffer, DNSHeader, DNSRecord
 
@@ -57,7 +56,7 @@ class DualServer:
             peer=handler.client_address[0],
             proto=handler.proto,
             query=rep.report())
-        extra = data|data['query']|rep.q.report()|dict(
+        extra = data|dict(ername='')|data['query']|rep.q.report()|dict(
             id=handler.reply.header.id,
             tag=rep.tag,
             rrjson=json.dumps(rep.rrset),
@@ -68,7 +67,7 @@ class DualServer:
         self.reports.append(dict(data))
 
 class BaseHandler(socketserver.BaseRequestHandler):
-    proto: Literal['TCP', 'UDP']
+    proto: Proto
     maxlen: PositiveInt
     'Max message length'
     server: BaseServerType
@@ -96,7 +95,7 @@ class BaseHandler(socketserver.BaseRequestHandler):
             logger.exception(f'{err!r} {self.client_address=}')
 
     def resolve(self, request: DNSRecord) -> DNSRecord:
-        header = DNSHeader(id=request.header.id, qr=1, aa=1, ra=1)
+        header = DNSHeader(id=request.header.id, qr=1, ra=1)
         self.reply = reply = DNSRecord(header=header, q=request.q)
         try:
             q = Question(
@@ -104,6 +103,7 @@ class BaseHandler(socketserver.BaseRequestHandler):
                 rdtype=QTYPE[request.q.qtype],
                 rdclass=CLASS[request.q.qclass])
             self.response = rep = self.resolver.query(q)
+            rep.id = header.id
             code = rep.code
             if code is code.NOERROR:
                 if q.rdtype is RdType.SVCB:

@@ -8,10 +8,9 @@ import random
 import re
 import time
 from functools import cached_property
-from typing import Annotated, Any, Callable, Self
+from typing import Annotated, Any, Callable, Literal, Self
 
 import pydantic
-from annotated_types import Lt
 from dnslib import RCODE
 from pydantic import (AfterValidator, BeforeValidator, ConfigDict, Field,
                       FieldSerializationInfo, IPvAnyAddress, NegativeInt,
@@ -30,6 +29,7 @@ __all__ = [
     'DataModel',
     'Delayer',
     'DomainRule',
+    'ErName',
     'Field',
     'IPvAnyAddress',
     'MockServer',
@@ -39,6 +39,7 @@ __all__ = [
     'Port',
     'PositiveFloat',
     'PositiveInt',
+    'Proto',
     'Question',
     'Rcode',
     'RdClass',
@@ -56,9 +57,8 @@ type Rset = list[str]
 type Domain = Annotated[
     str,
     AfterValidator(lambda x: x.strip('.').lower())]
-type Port = Annotated[
-    PositiveInt,
-    Lt(65_536)]
+type Port = Annotated[PositiveInt, Field(lt=0x10000)]
+type Proto = Literal['TCP', 'UDP']
 type ServersTag = Annotated[
     str,
     Field(pattern=r'^[a-zA-Z\d_.-]+$')]
@@ -107,6 +107,10 @@ class RdType(StrUpperEnum):
     SRV = 'SRV'
     SVCB = 'SVCB'
     TXT = 'TXT'
+
+class ErName(enum.StrEnum):
+    NoNameservers = 'NoNameservers'
+    Timeout = 'Timeout'
 
 class BaseModel(pydantic.BaseModel):
 
@@ -185,15 +189,17 @@ class Response(DataModel):
     "The server group or rule tag name, for logging"
     failed: list[Server]|None = None
     "A list of servers that were tried & failed, if any"
+    ername: ErName|None = None
+    "Error name hint in case of SERVFAIL"
 
-    @field_serializer('q', 'rrset', 'arset', 'auset', 'code', mode='wrap')
+    @field_serializer('q', 'rrset', 'arset', 'auset', 'code', 'ername', mode='wrap')
     def _response_fields(self, value: Any, nxt: SerializerFunctionWrapHandler, info: FieldSerializationInfo):
         if info.context and info.context.get('report'):
             if isinstance(value, Question):
                 return f'{value.rdclass} {value.rdtype} {value.qname}'
             if isinstance(value, list):
                 return len(value)
-        if isinstance(value, Rcode):
+        if isinstance(value, (Rcode, ErName)):
             return str(value)
         return nxt(value)
 
@@ -210,6 +216,8 @@ class BackendResponse(DataModel):
     "Authority section"
     rtime: NonNegativeFloat = 0.0
     "The additional response time delay"
+    ername: ErName|None = None
+    "Error name hint in case of SERVFAIL"
 
 class RunningMean(DataModel):
     """
