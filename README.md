@@ -4,7 +4,7 @@ DNS Server Selection algorithm demonstrations.
 
 ## Install
 
-- Requires Python 3.13
+- Requires Python 3.14
 - Create a virtual environment and install requirements.txt
 
 ## Usage
