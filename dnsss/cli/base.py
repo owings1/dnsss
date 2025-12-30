@@ -166,7 +166,7 @@ class ClientServerBaseOptions(CommandOptions):
         description=f'Output format, default {settings.DEFAULT_FORMAT}')
     quiet: bool = Field(
         default=False,
-        description='Dont output report')
+        description=f"Don't output report")
     report: Path|None = Field(
         default=None,
         description='Report to file instead of stdout')

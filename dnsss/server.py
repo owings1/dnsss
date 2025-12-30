@@ -9,6 +9,7 @@ from abc import abstractmethod
 from collections import deque
 from threading import Thread
 
+from dns.flags import Flag
 from dnslib import CLASS, QTYPE, RR, DNSBuffer, DNSHeader, DNSRecord
 
 from . import settings
@@ -24,12 +25,13 @@ replog = logging.getLogger(f'dnsss.server.response')
 
 class DualServer:
 
-    def __init__(self, address: IPvAnyAddress, port: Port, resolver: ResolverType, reports: bool = False, table: bool = True) -> None:
+    def __init__(self, address: IPvAnyAddress, port: Port, resolver: ResolverType, reports: bool = False, table: bool = True, srvsort: bool = False) -> None:
         self.address = address
         self.port = port
         self.resolver = resolver
         self.reports: deque[dict] = deque(maxlen=None if reports else 0)
         self.table = table
+        self.srvsort = srvsort
 
     def start(self) -> None:
         logger.info(f'Listen: {self.address}:{self.port}')
@@ -95,7 +97,7 @@ class BaseHandler(socketserver.BaseRequestHandler):
             logger.exception(f'{err!r} {self.client_address=}')
 
     def resolve(self, request: DNSRecord) -> DNSRecord:
-        header = DNSHeader(id=request.header.id, qr=1, ra=1)
+        header = DNSHeader(id=request.header.id, qr=1, rd=request.header.rd)
         self.reply = reply = DNSRecord(header=header, q=request.q)
         try:
             q = Question(
@@ -105,11 +107,19 @@ class BaseHandler(socketserver.BaseRequestHandler):
             self.response = rep = self.resolver.query(q)
             rep.id = header.id
             code = rep.code
+            flag = Flag(rep.flags)
+            header.ra = Flag.RA in flag
+            header.ad = Flag.AD in flag
+            header.cd = Flag.CD in flag
+            header.aa = Flag.AA in flag
+            # TODO: EDNS0 support
             if code is code.NOERROR:
                 if q.rdtype is RdType.SVCB:
                     code = code.NOTIMP
                 else:
                     self.addanswers()
+            elif code is code.NXDOMAIN:
+                self.addanswers()
         except:
             logger.exception(f'{request=} response={self.response}')
             code = Rcode.SERVFAIL
@@ -126,6 +136,9 @@ class BaseHandler(socketserver.BaseRequestHandler):
         # This buffer is just to track the message size, and is not actually sent.
         buf = DNSBuffer()
         reply = self.reply
+        if rep.q.rdtype is RdType.SRV and self.server.server.srvsort and rep.rrset:
+            # Sort SRV records by hostname
+            rep.rrset.sort(key=lambda rr: rr.rsplit(maxsplit=1)[-1])
         rsetfuncs = (
             # The answer rrset
             (rep.rrset, reply.add_answer),

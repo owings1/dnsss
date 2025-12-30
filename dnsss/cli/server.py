@@ -17,10 +17,14 @@ class ServerOptions(ClientServerBaseOptions):
     port: Port = Field(
         default=settings.LISTEN_PORT,
         description=f'Listen port, default {settings.LISTEN_PORT}')
+    srvsort: bool = Field(
+        default=False,
+        description='Sort SRV records by target hostname')
 
 class ServerCommand(ClientServerBaseCommand[ServerOptions]):
     options_model: ClassVar = ServerOptions
     logger: ClassVar = logging.getLogger(f'dnsss.server')
+    reloadable: ClassVar = ClientServerBaseCommand.reloadable + ['srvsort']
     fileable: ClassVar = ClientServerBaseCommand.fileable + ['address', 'port']
 
     @classmethod
@@ -29,6 +33,7 @@ class ServerCommand(ClientServerBaseCommand[ServerOptions]):
         arg = parser.add_argument
         arg('--port', '-p')
         arg('--address', '-b')
+        arg('--srvsort', '-S', action='store_true')
 
     def setup(self) -> None:
         super().setup()
@@ -39,13 +44,15 @@ class ServerCommand(ClientServerBaseCommand[ServerOptions]):
             port=self.opts.port,
             resolver=self.resolver,
             reports=True,
-            table=self.opts.table)
-            
+            table=self.opts.table,
+            srvsort=self.opts.srvsort)
+
     def reload(self) -> None:
         super().reload()
         # Update reference after reload
         self.server.resolver = self.resolver
         self.server.table = self.opts.table
+        self.server.srvsort = self.opts.srvsort
 
     def run(self) -> None:
         self.server.start()

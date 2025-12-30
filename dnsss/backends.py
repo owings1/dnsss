@@ -70,7 +70,7 @@ def dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
             code = Rcode.SERVFAIL
             extra.update(ername=ErName.Timeout)
         else:
-            extra.update(id=rep.response.id)
+            extra.update(id=rep.response.id, flags=rep.response.flags)
             code = Rcode(rep.response.rcode().name)
             rrset.extend(map(str, rep.chaining_result.cnames))
             rrset.extend(rstrs(rep.rrset))

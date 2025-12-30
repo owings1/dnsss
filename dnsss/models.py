@@ -179,6 +179,8 @@ class Response(DataModel):
     "The DNS question"
     code: Rcode
     "The response code (NOERROR, NXDOMAIN, SERVFAIL, etc.)"
+    flags: NonNegativeInt = 0
+    "The DNS flags value"
     rrset: Rset
     "The answer records returned"
     arset: Rset
@@ -208,6 +210,8 @@ class BackendResponse(DataModel):
     "Query ID"
     code: Rcode = Rcode.NOERROR
     "The response code (NOERROR, NXDOMAIN, SERVFAIL, etc.)"
+    flags: NonNegativeInt = 0
+    "The DNS flags value"
     rrset: Rset = Field(default_factory=list)
     "The answer records returned"
     arset: Rset = Field(default_factory=list)
