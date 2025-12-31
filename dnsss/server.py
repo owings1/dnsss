@@ -10,7 +10,8 @@ from collections import deque
 from threading import Thread
 
 from dns.flags import Flag
-from dnslib import CLASS, QTYPE, RR, DNSBuffer, DNSHeader, DNSRecord
+from dnslib import (CLASS, EDNS0, QTYPE, RR, SRV, DNSBuffer, DNSHeader,
+                    DNSRecord)
 
 from . import settings
 from .algs import ResolverType
@@ -73,11 +74,14 @@ class BaseHandler(socketserver.BaseRequestHandler):
     maxlen: PositiveInt
     'Max message length'
     server: BaseServerType
-    response: Response|None
+    edns0: EDNS0|None = settings.EDNS_BUFSIZE and EDNS0(udp_len=settings.EDNS_BUFSIZE) or None
 
     def setup(self) -> None:
-        self.response = None
-        self.resolver = self.server.server.resolver
+        self.response: Response|None = None
+        self.resolver: ResolverType = self.server.server.resolver
+        self.srvsort: bool = self.server.server.srvsort
+        # This buffer is just to track the message size, and is not actually sent.
+        self.rbuf = DNSBuffer()
 
     def handle(self) -> None:
         try:
@@ -99,11 +103,17 @@ class BaseHandler(socketserver.BaseRequestHandler):
     def resolve(self, request: DNSRecord) -> DNSRecord:
         header = DNSHeader(id=request.header.id, qr=1, rd=request.header.rd)
         self.reply = reply = DNSRecord(header=header, q=request.q)
+        header.pack(self.rbuf)
+        request.q.pack(self.rbuf)
+        if self.edns0:
+            reply.add_ar(self.edns0)
+            self.edns0.pack(self.rbuf)
         try:
             q = Question(
                 qname=str(request.q.qname),
                 rdtype=QTYPE[request.q.qtype],
-                rdclass=CLASS[request.q.qclass])
+                rdclass=CLASS[request.q.qclass],
+                flags=0x100 * bool(header.rd))
             self.response = rep = self.resolver.query(q)
             rep.id = header.id
             code = rep.code
@@ -112,7 +122,7 @@ class BaseHandler(socketserver.BaseRequestHandler):
             header.ad = Flag.AD in flag
             header.cd = Flag.CD in flag
             header.aa = Flag.AA in flag
-            # TODO: EDNS0 support
+            header.tc = Flag.TC in flag
             if code is code.NOERROR:
                 if q.rdtype is RdType.SVCB:
                     code = code.NOTIMP
@@ -133,26 +143,27 @@ class BaseHandler(socketserver.BaseRequestHandler):
         """
         rep = self.response
         maxlen = self.maxlen - len(rep.q.qname)
-        # This buffer is just to track the message size, and is not actually sent.
-        buf = DNSBuffer()
         reply = self.reply
-        if rep.q.rdtype is RdType.SRV and self.server.server.srvsort and rep.rrset:
-            # Sort SRV records by hostname
-            rep.rrset.sort(key=lambda rr: rr.rsplit(maxsplit=1)[-1])
+        rrset = [RR.fromZone(rstr)[0] for rstr in rep.rrset]
+        arset = [RR.fromZone(rstr)[0] for rstr in rep.arset]
+        auset = [RR.fromZone(rstr)[0] for rstr in rep.auset]
+        if rep.q.rdtype is RdType.SRV and self.srvsort and rrset:
+            # Sort SRV records by values
+            rrset.sort(key=srvsortkey)
         rsetfuncs = (
             # The answer rrset
-            (rep.rrset, reply.add_answer),
+            (rrset, reply.add_answer),
             # The additional records section
-            (rep.arset, reply.add_ar),
+            (arset, reply.add_ar),
             # The authority section
-            (rep.auset, reply.add_auth))
+            (auset, reply.add_auth))
+        buf = self.rbuf
         for rset, add in rsetfuncs:
-            for rstr in rset:
-                rr, = RR.fromZone(rstr)
+            for rr in rset:
                 rr.pack(buf)
                 if len(buf.data) > maxlen:
                     logger.debug(f'Truncating size={len(buf.data)}')
-                    reply.header.tc = 1
+                    reply.header.tc = True
                     return
                 add(rr)
 
@@ -236,3 +247,9 @@ class BadPacket(ValueError):
 
 class NoisyPacket(BadPacket):
     pass
+
+def srvsortkey(rr: RR) -> tuple[int, int, int, str]:
+    """Sort SRV records by priority, weight, port, target hostname."""
+    rdata: SRV = rr.rdata
+    return (rdata.priority, rdata.weight, rdata.port, rdata.target.idna())
+    

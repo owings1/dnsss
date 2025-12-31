@@ -19,7 +19,7 @@ class ServerOptions(ClientServerBaseOptions):
         description=f'Listen port, default {settings.LISTEN_PORT}')
     srvsort: bool = Field(
         default=False,
-        description='Sort SRV records by target hostname')
+        description='Sort SRV records by values')
 
 class ServerCommand(ClientServerBaseCommand[ServerOptions]):
     options_model: ClassVar = ServerOptions

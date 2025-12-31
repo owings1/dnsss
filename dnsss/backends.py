@@ -34,18 +34,28 @@ def dnspython_backend(where: str, port: int|str = 53) -> ResolveFunc:
     "Make a backend resolve function for a server/port using dnspython"
     import dns.resolver
     from dns.message import Message, QueryMessage
-    backend = dns.resolver.make_resolver_at(
-        where=where,
-        port=int(port),
-        resolver=dns.resolver.Resolver(configure=False))
+
+    @functools.cache
+    def backend_flagged(flags: NonNegativeInt) -> dns.resolver.Resolver:
+        # Flags are set globally for the resolver instance in dnspython
+        backend = dns.resolver.make_resolver_at(
+            where=where,
+            port=int(port),
+            resolver=dns.resolver.Resolver(configure=False))
+        backend.set_flags(flags)
+        return backend
+
+    # Fail fast
+    backend_flagged(0x100)
+
     def resolve(q: Question, lifetime: NonNegativeFloat, tcp: bool, source: IPvAnyAddress|None) -> ResolveFuncRet:
         rrset = []
         arset = []
         auset = []
         extra = {}
         try:
-            rep = backend.resolve(
-                **q.model_dump(),
+            rep = backend_flagged(q.flags & 0x100).resolve(
+                **q.model_dump(exclude={'flags'}),
                 raise_on_no_answer=False,
                 lifetime=lifetime,
                 tcp=tcp,

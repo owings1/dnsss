@@ -155,6 +155,8 @@ class Question(DataModel):
     "The record type requested"
     rdclass: RdClass = RdClass.IN
     "The query class"
+    flags: NonNegativeInt = 0x100
+    "The DNS flags value"
 
     @model_validator(mode='after')
     def autoreverse(self) -> Self:
